@@ -103,31 +103,23 @@ trigger:
     to: "on"
 
   - id: unblocked
-    platform: template
-    value_template: >
-      {{ blocked_boolean != {}
-         and is_state(blocked_boolean, 'off')
-         and (now() - states[blocked_boolean].last_changed).total_seconds() < 2 }}
+    platform: state
+    entity_id: !input blocked_boolean
+    to: "off"
 
   - id: darkness_on
-    platform: template
-    value_template: >
-      {{ darkness_sensor != {}
-         and is_state(darkness_sensor, 'on')
-         and (now() - states[darkness_sensor].last_changed).total_seconds() < 2 }}
+    platform: state
+    entity_id: !input darkness_sensor
+    to: "on"
 
   - id: night_mode_changed
-    platform: template
-    value_template: >
-      {{ night_sensor != {}
-         and (now() - states[night_sensor].last_changed).total_seconds() < 2 }}
+    platform: state
+    entity_id: !input night_sensor
 
   - id: blocked
-    platform: template
-    value_template: >
-      {{ blocked_boolean != {}
-         and is_state(blocked_boolean, 'on')
-         and (now() - states[blocked_boolean].last_changed).total_seconds() < 2 }}
+    platform: state
+    entity_id: !input blocked_boolean
+    to: "on"
 
 condition:
   - condition: or
