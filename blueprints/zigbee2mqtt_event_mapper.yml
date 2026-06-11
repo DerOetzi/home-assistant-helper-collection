@@ -2,8 +2,8 @@ blueprint:
   name: Zigbee2MQTT Event Mapper
   description: >
     Generic mapper for Zigbee2MQTT device events to Home Assistant actions.
-    Configure which actions should be executed for each button event (on, off, 
-    arrow clicks, brightness changes, etc.). One or more actions can be triggered 
+    Configure which actions should be executed for each button event (on, off,
+    arrow clicks, brightness changes, etc.). One or more actions can be triggered
     per event. Reusable for any Zigbee device.
   domain: automation
   author: deroetzi
@@ -14,8 +14,9 @@ blueprint:
     zigbee_device_topic:
       name: Zigbee2MQTT Device Topic
       description: >
-        The MQTT topic of your Zigbee device. Usually "zigbee2mqtt/device_name".
+        The MQTT topic of your Zigbee device (e.g., "zigbee2mqtt/device_name").
         You can find it in your Zigbee2MQTT logs or MQTT explorer.
+        Do NOT use wildcards (# or +) - specify the exact device topic.
       selector:
         text:
 
@@ -29,6 +30,13 @@ blueprint:
     event_off:
       name: Event "off" Actions
       description: Actions to execute when device sends "off" event
+      default: []
+      selector:
+        action:
+
+    event_toggle:
+      name: Event "toggle" Actions
+      description: Actions to execute when device sends "toggle" event
       default: []
       selector:
         action:
@@ -82,9 +90,30 @@ blueprint:
       selector:
         action:
 
-    event_toggle:
-      name: Event "toggle" Actions
-      description: Actions to execute when device sends "toggle" event
+    event_double_click:
+      name: Event "double_click" Actions
+      description: Actions to execute when device sends "double_click" event
+      default: []
+      selector:
+        action:
+
+    event_long_press:
+      name: Event "long_press" Actions
+      description: Actions to execute when device sends "long_press" event
+      default: []
+      selector:
+        action:
+
+    event_rotate_left:
+      name: Event "rotate_left" Actions
+      description: Actions to execute when device sends "rotate_left" event (rotary dimmers)
+      default: []
+      selector:
+        action:
+
+    event_rotate_right:
+      name: Event "rotate_right" Actions
+      description: Actions to execute when device sends "rotate_right" event (rotary dimmers)
       default: []
       selector:
         action:
@@ -98,56 +127,129 @@ variables:
 trigger:
   - platform: mqtt
     topic: "{{ zigbee_device_topic }}"
+    value_template: "{{ value_json.action is defined }}"
 
 action:
   - alias: Map Zigbee2MQTT event to actions
     choose:
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'on' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'on' }}
         sequence: !input event_on
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'off' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'off' }}
         sequence: !input event_off
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'arrow_left_click' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'toggle' }}
+        sequence: !input event_toggle
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'arrow_left_click' }}
         sequence: !input event_arrow_left_click
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'arrow_right_click' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'arrow_right_click' }}
         sequence: !input event_arrow_right_click
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'arrow_left_hold' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'arrow_left_hold' }}
         sequence: !input event_arrow_left_hold
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'arrow_right_hold' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'arrow_right_hold' }}
         sequence: !input event_arrow_right_hold
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'brightness_move_up' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'brightness_move_up' }}
         sequence: !input event_brightness_move_up
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'brightness_move_down' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'brightness_move_down' }}
         sequence: !input event_brightness_move_down
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'brightness_stop' }}"
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'brightness_stop' }}
         sequence: !input event_brightness_stop
 
       - conditions:
           - condition: template
-            value_template: "{{ trigger.payload_json.action == 'toggle' }}"
-        sequence: !input event_toggle
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'double_click' }}
+        sequence: !input event_double_click
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'long_press' }}
+        sequence: !input event_long_press
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'rotate_left' }}
+        sequence: !input event_rotate_left
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.payload_json is defined
+                 and trigger.payload_json.action is defined
+                 and trigger.payload_json.action == 'rotate_right' }}
+        sequence: !input event_rotate_right
+
+    default:
+      - alias: Log unknown event for debugging
+        action: system_log.write
+        data:
+          message: >
+            Zigbee2MQTT Event Mapper: Unknown event '{{ trigger.payload_json.action }}'
+            from device '{{ zigbee_device_topic }}'.
+            Add this event to the blueprint if you want to handle it.
+          level: warning
