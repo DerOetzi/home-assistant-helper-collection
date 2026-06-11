@@ -126,7 +126,6 @@ max_exceeded: silent
 trigger:
   - platform: state
     entity_id: !input event_entity
-    attribute: event_type
 
 condition:
   - condition: template
