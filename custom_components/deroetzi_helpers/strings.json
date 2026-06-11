@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "DerOetzi Helpers einrichten",
+        "description": "Gib einen Namen für diese Helfer-Gruppe an.",
+        "data": {
+          "name": "Name"
+        },
+        "data_description": {
+          "name": "Anzeigename für diese Integration"
+        }
+      }
+    },
+    "error": {},
+    "abort": {
+      "already_configured": "Diese Konfiguration existiert bereits."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Optionen",
+        "data": {}
+      }
+    }
+  }
+}

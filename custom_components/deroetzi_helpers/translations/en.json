@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up DerOetzi Helpers",
+        "description": "Enter a name for this helper group.",
+        "data": {
+          "name": "Name"
+        },
+        "data_description": {
+          "name": "Display name for this integration instance"
+        }
+      }
+    },
+    "error": {},
+    "abort": {
+      "already_configured": "This configuration already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {}
+      }
+    }
+  }
+}
