@@ -29,7 +29,9 @@ blueprint:
       default: {}
       selector:
         entity:
-          domain: input_boolean
+          domain: 
+            - input_boolean
+            - binary_sensor
 
     darkness_sensor:
       name: Darkness Sensor (optional)
@@ -93,22 +95,56 @@ variables:
   night_sensor: !input night_sensor
 
 trigger:
-  - platform: state
+  - id: motion_detected
+    platform: state
     entity_id: !input motion_sensors
     to: "on"
 
+  - id: unblocked
+    platform: template
+    value_template: >
+      {{ blocked_boolean != {}
+         and is_state(blocked_boolean, 'off')
+         and states[blocked_boolean].last_changed != states[blocked_boolean].last_updated
+         and (now() - states[blocked_boolean].last_changed).total_seconds() < 2 }}
+
+  - id: darkness_on
+    platform: template
+    value_template: >
+      {{ darkness_sensor != {}
+         and is_state(darkness_sensor, 'on')
+         and states[darkness_sensor].last_changed != states[darkness_sensor].last_updated
+         and (now() - states[darkness_sensor].last_changed).total_seconds() < 2 }}
+
+  - id: night_mode_changed
+    platform: template
+    value_template: >
+      {{ night_sensor != {}
+         and states[night_sensor].last_changed != states[night_sensor].last_updated
+         and (now() - states[night_sensor].last_changed).total_seconds() < 2 }}
+
 condition:
-  - alias: Not blocked
+  - alias: Not blocked (or triggered by unblock)
     condition: template
     value_template: >
-      {{ blocked_boolean == {}
+      {{ trigger.id == 'unblocked'
+         or blocked_boolean == {}
          or is_state(blocked_boolean, 'off') }}
 
-  - alias: Darkness condition
+  - alias: Darkness condition (or triggered by darkness sensor)
     condition: template
     value_template: >
-      {{ darkness_sensor == {}
+      {{ trigger.id == 'darkness_on'
+         or darkness_sensor == {}
          or is_state(darkness_sensor, 'on') }}
+
+  - alias: Motion present (if not triggered by motion directly)
+    condition: template
+    value_template: >
+      {{ trigger.id == 'motion_detected'
+         or (expand(motion_sensors)
+             | selectattr('state', 'equalto', 'on')
+             | list | count > 0) }}
 
 action:
   - alias: Night mode or normal turn-on action
