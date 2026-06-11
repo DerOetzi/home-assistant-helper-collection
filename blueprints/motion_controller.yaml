@@ -29,7 +29,7 @@ blueprint:
       default: {}
       selector:
         entity:
-          domain: 
+          domain:
             - input_boolean
             - binary_sensor
 
@@ -93,6 +93,8 @@ variables:
   blocked_boolean: !input blocked_boolean
   darkness_sensor: !input darkness_sensor
   night_sensor: !input night_sensor
+  has_motion: >
+    {{ expand(motion_sensors) | selectattr('state', 'equalto', 'on') | list | count > 0 }}
 
 trigger:
   - id: motion_detected
@@ -105,7 +107,6 @@ trigger:
     value_template: >
       {{ blocked_boolean != {}
          and is_state(blocked_boolean, 'off')
-         and states[blocked_boolean].last_changed != states[blocked_boolean].last_updated
          and (now() - states[blocked_boolean].last_changed).total_seconds() < 2 }}
 
   - id: darkness_on
@@ -113,14 +114,12 @@ trigger:
     value_template: >
       {{ darkness_sensor != {}
          and is_state(darkness_sensor, 'on')
-         and states[darkness_sensor].last_changed != states[darkness_sensor].last_updated
          and (now() - states[darkness_sensor].last_changed).total_seconds() < 2 }}
 
   - id: night_mode_changed
     platform: template
     value_template: >
       {{ night_sensor != {}
-         and states[night_sensor].last_changed != states[night_sensor].last_updated
          and (now() - states[night_sensor].last_changed).total_seconds() < 2 }}
 
   - id: blocked
@@ -128,75 +127,80 @@ trigger:
     value_template: >
       {{ blocked_boolean != {}
          and is_state(blocked_boolean, 'on')
-         and states[blocked_boolean].last_changed != states[blocked_boolean].last_updated
          and (now() - states[blocked_boolean].last_changed).total_seconds() < 2 }}
 
 condition:
-  - alias: Not blocked (or triggered by special events)
-    condition: template
-    value_template: >
-      {{ trigger.id in ['unblocked', 'blocked', 'darkness_on', 'night_mode_changed']
-         or blocked_boolean == {}
-         or is_state(blocked_boolean, 'off') }}
+  - condition: or
+    conditions:
+      # Special triggers bypass standard conditions
+      - condition: template
+        value_template: "{{ trigger.id in ['blocked', 'unblocked', 'darkness_on', 'night_mode_changed'] }}"
 
-  - alias: Darkness condition (or triggered by darkness/night/blocked)
-    condition: template
-    value_template: >
-      {{ trigger.id in ['darkness_on', 'night_mode_changed', 'blocked']
-         or darkness_sensor == {}
-         or is_state(darkness_sensor, 'on') }}
+      # Standard conditions for motion_detected trigger
+      - condition: and
+        conditions:
+          - alias: Not blocked
+            condition: template
+            value_template: >
+              {{ blocked_boolean == {} or is_state(blocked_boolean, 'off') }}
+
+          - alias: Dark enough
+            condition: template
+            value_template: >
+              {{ darkness_sensor == {} or is_state(darkness_sensor, 'on') }}
 
 action:
-  - alias: Handle different trigger sources
+  - alias: Route based on trigger type
     choose:
-      # Blocked trigger - stop timer only (do nothing, just stop)
+      # Route 1: Blocked - stop timer without changing lights
       - conditions:
           - condition: template
             value_template: "{{ trigger.id == 'blocked' }}"
         sequence: []
 
-      # Non-motion triggers with no motion present - turn off lights
+      # Route 2: Non-motion triggers with no motion - turn off lights
       - conditions:
           - condition: template
             value_template: >
               {{ trigger.id in ['unblocked', 'darkness_on', 'night_mode_changed']
-                 and expand(motion_sensors)
-                     | selectattr('state', 'equalto', 'on')
-                     | list | count == 0 }}
+                 and not has_motion }}
         sequence: !input off_action
 
-    # Default: normal motion flow
-    default:
-      - alias: Night mode or normal turn-on action
-        choose:
-          - conditions:
-              - condition: template
-                value_template: >
-                  {{ night_sensor != {}
-                     and is_state(night_sensor, 'on') }}
-            sequence: !input nightmode_action
-        default: !input on_action
-
-      - alias: Wait until all sensors report no motion
-        wait_for_trigger:
-          - platform: template
+      # Route 3: Motion present or motion_detected - normal flow
+      - conditions:
+          - condition: template
             value_template: >
-              {{ expand(motion_sensors)
-                 | selectattr('state', 'equalto', 'on')
-                 | list | count == 0 }}
-        timeout:
-          hours: 2
+              {{ trigger.id == 'motion_detected' or has_motion }}
+        sequence:
+          - alias: Turn on lights (night mode or normal)
+            choose:
+              - conditions:
+                  - condition: template
+                    value_template: >
+                      {{ night_sensor != {} and is_state(night_sensor, 'on') }}
+                sequence: !input nightmode_action
+            default: !input on_action
 
-      - alias: Wait for turn-off delay
-        delay:
-          seconds: !input timer_seconds
-
-      - alias: Turn-off action
-        choose:
-          - conditions:
-              - condition: template
+          - alias: Wait until all sensors report no motion
+            wait_for_trigger:
+              - platform: template
                 value_template: >
                   {{ expand(motion_sensors)
                      | selectattr('state', 'equalto', 'on')
                      | list | count == 0 }}
+            timeout:
+              hours: 2
+
+          - alias: Wait for turn-off delay
+            delay:
+              seconds: !input timer_seconds
+
+          - alias: Final check before turning off
+            condition: template
+            value_template: >
+              {{ expand(motion_sensors)
+                 | selectattr('state', 'equalto', 'on')
+                 | list | count == 0 }}
+
+          - alias: Turn off lights
             sequence: !input off_action
