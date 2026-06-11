@@ -1,4 +1,4 @@
-lueprint:
+blueprint:
   name: Light Controller – Dimmable & Color Temperature
   description: >
     Controls dimmable lights with optional color temperature adjustment.
