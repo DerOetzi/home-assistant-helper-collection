@@ -1,15 +1,27 @@
 blueprint:
   name: Light Controller – Dimmable & Color Temperature
   description: >
-    Controls dimmable lights with optional color temperature adjustment.
-    Supports brightness control, transition times, and nightmode.
-    For use with dimmable and color temperature light types.
+    Controls dimmable lights based on an input_select or select entity state.
+    Supports brightness control, color temperature adjustment, transition times, and nightmode.
+    Expects controller states: "On", "Off", and optionally "Night" or "Nightmode".
   domain: automation
   author: deroetzi
   homeassistant:
     min_version: "2024.6.0"
 
   input:
+    controller_entity:
+      name: Controller Entity
+      description: >
+        input_select or select entity that controls the lights.
+        Expected states: "On", "Off", and optionally "Night" or "Nightmode".
+        State names are case-insensitive.
+      selector:
+        entity:
+          domain:
+            - input_select
+            - select
+
     light_entities:
       name: Light Entities
       description: One or more dimmable light entities to control
@@ -20,7 +32,7 @@ blueprint:
 
     on_brightness:
       name: On Brightness
-      description: Brightness percentage when turning light on (0-100)
+      description: Brightness percentage when turning light on (1-100)
       default: 100
       selector:
         number:
@@ -28,6 +40,45 @@ blueprint:
           max: 100
           unit_of_measurement: "%"
           mode: slider
+
+    nightmode_brightness:
+      name: Nightmode Brightness
+      description: Brightness percentage in nightmode (1-100)
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    default_color_temperature:
+      name: Default Color Temperature (optional)
+      description: >
+        Color temperature in Kelvin (2200-6500).
+        Leave empty if your lights don't support color temperature.
+      default: 2700
+      selector:
+        number:
+          min: 2200
+          max: 6500
+          step: 50
+          unit_of_measurement: K
+          mode: box
+
+    nightmode_color_temperature:
+      name: Nightmode Color Temperature (optional)
+      description: >
+        Color temperature in Kelvin for nightmode (2200-6500).
+        Leave empty to use the same as default.
+      default: 2200
+      selector:
+        number:
+          min: 2200
+          max: 6500
+          step: 50
+          unit_of_measurement: K
+          mode: box
 
     transition_time:
       name: Transition Time
@@ -41,66 +92,29 @@ blueprint:
           unit_of_measurement: s
           mode: box
 
-    nightmode_brightness:
-      name: Nightmode Brightness
-      description: Brightness percentage in nightmode (0-100)
-      default: 10
-      selector:
-        number:
-          min: 1
-          max: 100
-          unit_of_measurement: "%"
-          mode: slider
-
-    default_color_temperature:
-      name: Default Color Temperature
-      description: Default color temperature in Kelvin (2200-6500)
-      default: 2700
-      selector:
-        number:
-          min: 2200
-          max: 6500
-          step: 50
-          unit_of_measurement: K
-          mode: box
-
-    command_on:
-      name: On Command
-      description: The command that triggers "on". Usually "On" or "true"
-      default: "On"
-      selector:
-        text:
-
-    command_off:
-      name: Off Command
-      description: The command that triggers "off". Usually "Off" or "false"
-      default: "Off"
-      selector:
-        text:
-
-    command_nightmode:
-      name: Nightmode Command
-      description: The command that triggers nightmode. Usually "Nightmode"
-      default: "Nightmode"
-      selector:
-        text:
-
-mode: queued
+mode: restart
 max_exceeded: silent
+
+variables:
+  controller_entity: !input controller_entity
+  light_entities: !input light_entities
+  default_color_temperature: !input default_color_temperature
+  nightmode_color_temperature: !input nightmode_color_temperature
 
 trigger:
   - platform: state
-    entity_id: !input light_entities
+    entity_id: !input controller_entity
 
 action:
-  - alias: Handle light command
+  - alias: Handle controller state
     choose:
+      # ON State
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.payload == !input command_on }}
+              {{ trigger.to_state.state | lower in ['on'] }}
         sequence:
-          - service: light.turn_on
+          - action: light.turn_on
             target:
               entity_id: !input light_entities
             data:
@@ -108,26 +122,38 @@ action:
               color_temp_kelvin: !input default_color_temperature
               transition: !input transition_time
 
+      # NIGHT/NIGHTMODE State
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.payload == !input command_nightmode }}
+              {{ trigger.to_state.state | lower in ['night', 'nightmode'] }}
         sequence:
-          - service: light.turn_on
+          - action: light.turn_on
             target:
               entity_id: !input light_entities
             data:
               brightness_pct: !input nightmode_brightness
-              color_temp_kelvin: !input default_color_temperature
+              color_temp_kelvin: !input nightmode_color_temperature
               transition: !input transition_time
 
+      # OFF State
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.payload == !input command_off }}
+              {{ trigger.to_state.state | lower in ['off'] }}
         sequence:
-          - service: light.turn_off
+          - action: light.turn_off
             target:
               entity_id: !input light_entities
             data:
               transition: !input transition_time
+
+    default:
+      - alias: Log unknown controller state
+        action: system_log.write
+        data:
+          message: >
+            Light Controller: Unknown state '{{ trigger.to_state.state }}'
+            from controller '{{ controller_entity }}'.
+            Expected states: On, Off, Night/Nightmode.
+          level: warning
