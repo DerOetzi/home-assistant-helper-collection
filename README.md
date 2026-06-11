@@ -1,5 +1,10 @@
 # DerOetzi Helpers — Home Assistant Custom Integration
 
+> [!NOTE]
+> **This project is currently just a personal playground and not intended for production use.**
+> If you are looking for smart home helpers, check out my Node-RED project instead:
+> [node-red-contrib-smarthome-helper](https://github.com/DerOetzi/node-red-contrib-smarthome-helper)
+
 A custom integration for [Home Assistant](https://www.home-assistant.io/) providing a collection of virtual helper entities.
 
 ## Installation
