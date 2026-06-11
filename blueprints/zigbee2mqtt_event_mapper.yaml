@@ -2,9 +2,9 @@ blueprint:
   name: Zigbee2MQTT Event Mapper
   description: >
     Generic mapper for Zigbee2MQTT device events using Home Assistant event entities.
+    Supports one or multiple event entities (e.g., multiple switches in the same room).
     Configure which actions should be executed for each button event (on, off,
-    arrow clicks, brightness changes, etc.). One or more actions can be triggered
-    per event. Reusable for any Zigbee device with an event entity.
+    arrow clicks, brightness changes, etc.). Reusable for any Zigbee device with an event entity.
   domain: automation
   author: deroetzi
   homeassistant:
@@ -12,13 +12,15 @@ blueprint:
 
   input:
     event_entity:
-      name: Zigbee2MQTT Event Entity
+      name: Zigbee2MQTT Event Entity (or Entities)
       description: >
-        The event entity of your Zigbee device (e.g., event.device_name_action).
-        You can find it in Settings > Devices & Services > Your Zigbee Device.
+        One or more event entities (e.g., event.device_name_action).
+        All selected entities will trigger the same actions.
+        You can find them in Settings > Devices & Services > Your Zigbee Device.
       selector:
         entity:
           domain: event
+          multiple: true
 
     event_on:
       name: Event "on" Actions
