@@ -127,7 +127,9 @@ variables:
 trigger:
   - platform: mqtt
     topic: "{{ zigbee_device_topic }}"
-    value_template: "{{ value_json.action is defined }}"
+    value_template: >
+      {{ value_json.action is defined
+         and value_json.action not in ['', none, null] }}
 
 action:
   - alias: Map Zigbee2MQTT event to actions
