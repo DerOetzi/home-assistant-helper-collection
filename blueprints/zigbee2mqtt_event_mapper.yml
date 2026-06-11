@@ -1,0 +1,153 @@
+blueprint:
+  name: Zigbee2MQTT Event Mapper
+  description: >
+    Generic mapper for Zigbee2MQTT device events to Home Assistant actions.
+    Configure which actions should be executed for each button event (on, off, 
+    arrow clicks, brightness changes, etc.). One or more actions can be triggered 
+    per event. Reusable for any Zigbee device.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: "2024.6.0"
+
+  input:
+    zigbee_device_topic:
+      name: Zigbee2MQTT Device Topic
+      description: >
+        The MQTT topic of your Zigbee device. Usually "zigbee2mqtt/device_name".
+        You can find it in your Zigbee2MQTT logs or MQTT explorer.
+      selector:
+        text:
+
+    event_on:
+      name: Event "on" Actions
+      description: Actions to execute when device sends "on" event
+      default: []
+      selector:
+        action:
+
+    event_off:
+      name: Event "off" Actions
+      description: Actions to execute when device sends "off" event
+      default: []
+      selector:
+        action:
+
+    event_arrow_left_click:
+      name: Event "arrow_left_click" Actions
+      description: Actions to execute when device sends "arrow_left_click" event
+      default: []
+      selector:
+        action:
+
+    event_arrow_right_click:
+      name: Event "arrow_right_click" Actions
+      description: Actions to execute when device sends "arrow_right_click" event
+      default: []
+      selector:
+        action:
+
+    event_arrow_left_hold:
+      name: Event "arrow_left_hold" Actions
+      description: Actions to execute when device sends "arrow_left_hold" event
+      default: []
+      selector:
+        action:
+
+    event_arrow_right_hold:
+      name: Event "arrow_right_hold" Actions
+      description: Actions to execute when device sends "arrow_right_hold" event
+      default: []
+      selector:
+        action:
+
+    event_brightness_move_up:
+      name: Event "brightness_move_up" Actions
+      description: Actions to execute when device sends "brightness_move_up" event
+      default: []
+      selector:
+        action:
+
+    event_brightness_move_down:
+      name: Event "brightness_move_down" Actions
+      description: Actions to execute when device sends "brightness_move_down" event
+      default: []
+      selector:
+        action:
+
+    event_brightness_stop:
+      name: Event "brightness_stop" Actions
+      description: Actions to execute when device sends "brightness_stop" event
+      default: []
+      selector:
+        action:
+
+    event_toggle:
+      name: Event "toggle" Actions
+      description: Actions to execute when device sends "toggle" event
+      default: []
+      selector:
+        action:
+
+mode: queued
+max_exceeded: silent
+
+variables:
+  zigbee_device_topic: !input zigbee_device_topic
+
+trigger:
+  - platform: mqtt
+    topic: "{{ zigbee_device_topic }}"
+
+action:
+  - alias: Map Zigbee2MQTT event to actions
+    choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'on' }}"
+        sequence: !input event_on
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'off' }}"
+        sequence: !input event_off
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'arrow_left_click' }}"
+        sequence: !input event_arrow_left_click
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'arrow_right_click' }}"
+        sequence: !input event_arrow_right_click
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'arrow_left_hold' }}"
+        sequence: !input event_arrow_left_hold
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'arrow_right_hold' }}"
+        sequence: !input event_arrow_right_hold
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'brightness_move_up' }}"
+        sequence: !input event_brightness_move_up
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'brightness_move_down' }}"
+        sequence: !input event_brightness_move_down
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'brightness_stop' }}"
+        sequence: !input event_brightness_stop
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.payload_json.action == 'toggle' }}"
+        sequence: !input event_toggle

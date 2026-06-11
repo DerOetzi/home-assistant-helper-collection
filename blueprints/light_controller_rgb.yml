@@ -1,0 +1,217 @@
+blueprint:
+  name: Light Controller – RGB
+  description: >
+    Controls RGB lights with full color control, brightness, color temperature,
+    and nightmode. Supports fixed colors, color cycling, and dynamic color changes.
+    For use with RGB light types.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: "2024.6.0"
+
+  input:
+    light_entities:
+      name: Light Entities
+      description: One or more RGB light entities to control
+      selector:
+        entity:
+          multiple: true
+          domain: light
+
+    on_brightness:
+      name: On Brightness
+      description: Brightness percentage when turning light on (0-100)
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    transition_time:
+      name: Transition Time
+      description: Fade time when changing brightness or color (in seconds)
+      default: 0.3
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.1
+          unit_of_measurement: s
+          mode: box
+
+    nightmode_brightness:
+      name: Nightmode Brightness
+      description: Brightness percentage in nightmode (0-100)
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    default_color_temperature:
+      name: Default Color Temperature
+      description: Default color temperature in Kelvin (2200-6500)
+      default: 2700
+      selector:
+        number:
+          min: 2200
+          max: 6500
+          step: 50
+          unit_of_measurement: K
+          mode: box
+
+    fixed_hue:
+      name: Fixed Hue
+      description: Fixed hue value when turning on (0-360 degrees)
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: 1
+          unit_of_measurement: "°"
+          mode: slider
+
+    fixed_saturation:
+      name: Fixed Saturation
+      description: Fixed saturation value when turning on (0-100%)
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    enable_color_cycle:
+      name: Enable Color Cycle
+      description: >
+        Cycle through colors continuously when enabled.
+        Works only in on state (not nightmode).
+      default: false
+      selector:
+        boolean:
+
+    color_cycle_interval:
+      name: Color Cycle Interval
+      description: Milliseconds between color updates during cycle
+      default: 500
+      selector:
+        number:
+          min: 100
+          max: 5000
+          step: 100
+          unit_of_measurement: ms
+          mode: box
+
+    command_on:
+      name: On Command
+      description: The command that triggers "on". Usually "On" or "true"
+      default: "On"
+      selector:
+        text:
+
+    command_off:
+      name: Off Command
+      description: The command that triggers "off". Usually "Off" or "false"
+      default: "Off"
+      selector:
+        text:
+
+    command_nightmode:
+      name: Nightmode Command
+      description: The command that triggers nightmode. Usually "Nightmode"
+      default: "Nightmode"
+      selector:
+        text:
+
+mode: queued
+max_exceeded: silent
+
+variables:
+  light_entities: !input light_entities
+  fixed_hue: !input fixed_hue
+  fixed_saturation: !input fixed_saturation
+  on_brightness: !input on_brightness
+  nightmode_brightness: !input nightmode_brightness
+  color_temp_kelvin: !input default_color_temperature
+  transition: !input transition_time
+  enable_color_cycle: !input enable_color_cycle
+  cycle_interval: !input color_cycle_interval
+  command_on: !input command_on
+  command_off: !input command_off
+  command_nightmode: !input command_nightmode
+
+trigger:
+  - platform: state
+    entity_id: !input light_entities
+
+action:
+  - alias: Handle light command
+    choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.payload == command_on }}
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: !input light_entities
+            data:
+              brightness_pct: !input on_brightness
+              hs_color:
+                - "{{ fixed_hue }}"
+                - "{{ fixed_saturation }}"
+              transition: !input transition_time
+
+          - alias: Start color cycle if enabled
+            if:
+              - condition: template
+                value_template: "{{ enable_color_cycle }}"
+            then:
+              - repeat:
+                  while:
+                    - condition: state
+                      entity_id: !input light_entities
+                      state: "on"
+                  sequence:
+                    - service: light.turn_on
+                      target:
+                        entity_id: !input light_entities
+                      data:
+                        hs_color:
+                          - "{{ (repeat.index * 360 / 30) | round(1) }}"
+                          - "{{ fixed_saturation }}"
+                        transition: 0.1
+                    - delay:
+                        milliseconds: !input color_cycle_interval
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.payload == command_nightmode }}
+        sequence:
+          - service: light.turn_on
+            target:
+              entity_id: !input light_entities
+            data:
+              brightness_pct: !input nightmode_brightness
+              hs_color:
+                - "{{ fixed_hue }}"
+                - "{{ fixed_saturation }}"
+              transition: !input transition_time
+
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.payload == command_off }}
+        sequence:
+          - service: light.turn_off
+            target:
+              entity_id: !input light_entities
+            data:
+              transition: !input transition_time

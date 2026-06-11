@@ -1,0 +1,71 @@
+blueprint:
+  name: Motion Controller – Manual Override
+  description: >
+    Companion blueprint for the Motion Controller blueprint.
+    Detects manual changes to the target entity and blocks the automation
+    for a configurable duration. A new manual change during the block period
+    resets the timer (mode: restart).
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: "2024.8.0"
+
+  input:
+    target_entity:
+      name: Target Entity
+      description: >
+        The entity controlled by the Motion Controller (e.g. light.living_room).
+        Manual changes to this entity trigger the block.
+      selector:
+        entity:
+
+    blocked_boolean:
+      name: Blocked Switch
+      description: >
+        The same input_boolean as in the Motion Controller blueprint.
+        Turned on when a manual override is detected and automatically
+        turned off again after the block duration.
+      selector:
+        entity:
+          domain: input_boolean
+
+    reactivate_minutes:
+      name: Auto-release after (minutes)
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 240
+          unit_of_measurement: min
+          mode: box
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: state
+    entity_id: !input target_entity
+    not_to:
+      - unavailable
+      - unknown
+
+condition:
+  - alias: Only on manual change (not triggered by an automation)
+    condition: template
+    value_template: >
+      {{ trigger.to_state.context.user_id is not none }}
+
+action:
+  - alias: Block automation
+    action: input_boolean.turn_on
+    target:
+      entity_id: !input blocked_boolean
+
+  - alias: Auto-release timer
+    delay:
+      minutes: !input reactivate_minutes
+
+  - alias: Release block
+    action: input_boolean.turn_off
+    target:
+      entity_id: !input blocked_boolean

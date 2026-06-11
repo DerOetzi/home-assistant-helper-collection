@@ -1,0 +1,146 @@
+blueprint:
+  name: Motion Controller
+  description: >
+    Motion-triggered automation with darkness condition, night mode and
+    configurable turn-off delay. Supports multiple motion sensors (OR logic).
+    Companion: motion_controller_override.yaml for manual override detection.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: "2024.6.0"
+
+  input:
+    motion_sensors:
+      name: Motion Sensors
+      description: >
+        One or more motion sensors.
+        Action is triggered when at least one is active (OR logic).
+      selector:
+        entity:
+          multiple: true
+          device_class: motion
+
+    blocked_boolean:
+      name: Blocked Switch (optional)
+      description: >
+        input_boolean that temporarily blocks the automation.
+        Set by the motion_controller_override blueprint.
+        Leave empty if not needed.
+      default: {}
+      selector:
+        entity:
+          domain: input_boolean
+
+    darkness_sensor:
+      name: Darkness Sensor (optional)
+      description: >
+        binary_sensor that is 'on' when it is dark.
+        When configured, the automation only runs in darkness.
+        Leave empty to run regardless of light conditions.
+      default: {}
+      selector:
+        entity:
+          domain: binary_sensor
+
+    night_sensor:
+      name: Night Sensor (optional)
+      description: >
+        Sensor that is 'on' when it is night.
+        When configured, the night mode action is used instead of the turn-on action.
+        Leave empty to disable night mode.
+      default: {}
+      selector:
+        entity:
+          domain:
+            - binary_sensor
+            - input_boolean
+
+    timer_seconds:
+      name: Turn-off Delay
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 7200
+          step: 5
+          unit_of_measurement: s
+          mode: box
+
+    on_action:
+      name: Turn-On Action
+      selector:
+        action:
+
+    off_action:
+      name: Turn-Off Action
+      selector:
+        action:
+
+    nightmode_action:
+      name: Night Mode Action
+      description: Replaces the turn-on action when the night sensor is active.
+      default: []
+      selector:
+        action:
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  motion_sensors: !input motion_sensors
+  blocked_boolean: !input blocked_boolean
+  darkness_sensor: !input darkness_sensor
+  night_sensor: !input night_sensor
+
+trigger:
+  - platform: state
+    entity_id: !input motion_sensors
+    to: "on"
+
+condition:
+  - alias: Not blocked
+    condition: template
+    value_template: >
+      {{ blocked_boolean == {}
+         or is_state(blocked_boolean, 'off') }}
+
+  - alias: Darkness condition
+    condition: template
+    value_template: >
+      {{ darkness_sensor == {}
+         or is_state(darkness_sensor, 'on') }}
+
+action:
+  - alias: Night mode or normal turn-on action
+    choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ night_sensor != {}
+                 and is_state(night_sensor, 'on') }}
+        sequence: !input nightmode_action
+    default: !input on_action
+
+  - alias: Wait until all sensors report no motion
+    wait_for_trigger:
+      - platform: template
+        value_template: >
+          {{ expand(motion_sensors)
+             | selectattr('state', 'equalto', 'on')
+             | list | count == 0 }}
+    timeout:
+      hours: 2
+
+  - alias: Wait for turn-off delay
+    delay:
+      seconds: !input timer_seconds
+
+  - alias: Turn-off action
+    choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ expand(motion_sensors)
+                 | selectattr('state', 'equalto', 'on')
+                 | list | count == 0 }}
+        sequence: !input off_action
