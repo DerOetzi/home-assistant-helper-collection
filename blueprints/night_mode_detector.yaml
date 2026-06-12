@@ -203,6 +203,7 @@ blueprint:
               - binary_sensor
               device_class:
               - battery_charging
+              - plug
               multiple: true
               reorder: false
         bedroom_occupancy_sensor:
@@ -332,12 +333,12 @@ variables:
     %}\n{{ wd != {} and is_state(wd, 'off') }}\n"
   active_tod: "{% if is_free_day and sleep_tod_free != {} %}{{ sleep_tod_free }}{% else
     %}{{ sleep_tod }}{% endif %}\n"
-  approaching_bedtime: "{% set ev = state_attr(active_tod, 'next_change') %}\n{{
-    is_state(active_tod, 'off') and ev is not none\n   and (ev - now()).total_seconds()
+  approaching_bedtime: "{% set ev = state_attr(active_tod, 'after') | as_timestamp(0)
+    %}\n{{ is_state(active_tod, 'off') and ev > 0\n   and (ev - now() | as_timestamp)
     <= bedtime_pre_roll | float(0) * 60 }}\n"
-  approaching_wake: "{% set ev = state_attr(active_tod, 'next_change') %}\n{{ is_state(active_tod,
-    'on') and ev is not none\n   and (ev - now()).total_seconds() <= wake_pre_roll
-    | float(0) * 60 }}\n"
+  approaching_wake: "{% set ev = state_attr(active_tod, 'before') | as_timestamp(0)
+    %}\n{{ is_state(active_tod, 'on') and ev > 0\n   and (ev - now() | as_timestamp)
+    <= wake_pre_roll | float(0) * 60 }}\n"
   in_night_window: '{{ is_state(active_tod, ''on'') or approaching_bedtime }}'
   bed_score: "{% set ns = namespace(score=0) %}\n{% if presence_charging_sensors |
     length > 0\n   and expand(presence_charging_sensors) | selectattr('state', 'equalto',
