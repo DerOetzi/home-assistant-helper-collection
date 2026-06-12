@@ -1,133 +1,135 @@
 blueprint:
   name: Light Controller – RGB
-  description: >
-    Controls RGB lights based on an input_select or select entity state.
-    Supports full color control, brightness, color cycling, and nightmode.
-    Expects controller states: "On", "Off", and optionally "Night" or "Nightmode".
+  description:
+    'Controls RGB lights based on an input_select or select entity state.
+    Supports full color control, brightness, color cycling, and nightmode. Expects
+    controller states: "On", "Off", and optionally "Night" or "Nightmode".
+
+    '
   domain: automation
   author: deroetzi
   homeassistant:
-    min_version: "2024.6.0"
+    min_version: 2024.6.0
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/light_controller_rgb.yaml
 
   input:
     controller_entity:
       name: Controller Entity
-      description: >
-        input_select or select entity that controls the lights.
-        Expected states: "On", "Off", and optionally "Night" or "Nightmode".
-        State names are case-insensitive.
+      description:
+        'input_select or select entity that controls the lights. Expected
+        states: "On", "Off", and optionally "Night" or "Nightmode". State names are
+        case-insensitive.
+
+        '
       selector:
         entity:
           domain:
             - input_select
             - select
-
+          multiple: false
+          reorder: false
     light_entities:
       name: Light Entities
       description: One or more RGB light entities to control
       selector:
         entity:
           multiple: true
-          domain: light
-
+          domain:
+            - light
+          reorder: false
     on_brightness:
       name: On Brightness
       description: Brightness percentage when turning light on (1-100)
       default: 100
       selector:
         number:
-          min: 1
-          max: 100
+          min: 1.0
+          max: 100.0
           unit_of_measurement: "%"
           mode: slider
-
+          step: 1.0
     nightmode_brightness:
       name: Nightmode Brightness
       description: Brightness percentage in nightmode (1-100)
       default: 10
       selector:
         number:
-          min: 1
-          max: 100
+          min: 1.0
+          max: 100.0
           unit_of_measurement: "%"
           mode: slider
-
+          step: 1.0
     fixed_hue:
       name: Fixed Hue
       description: Hue value when turning on (0-360 degrees)
       default: 0
       selector:
         number:
-          min: 0
-          max: 360
-          step: 1
-          unit_of_measurement: "°"
+          min: 0.0
+          max: 360.0
+          step: 1.0
+          unit_of_measurement: °
           mode: slider
-
     fixed_saturation:
       name: Fixed Saturation
       description: Saturation value when turning on (0-100%)
       default: 100
       selector:
         number:
-          min: 0
-          max: 100
+          min: 0.0
+          max: 100.0
           unit_of_measurement: "%"
           mode: slider
-
+          step: 1.0
     enable_color_cycle:
       name: Enable Color Cycle
-      description: >
-        Cycle through colors continuously when enabled.
-        Works only in on state (not nightmode).
+      description:
+        "Cycle through colors continuously when enabled. Works only in
+        on state (not nightmode).
+
+        "
       default: false
       selector:
-        boolean:
-
+        boolean: {}
     color_cycle_interval:
       name: Color Cycle Interval
       description: Milliseconds between color updates during cycle
-      default: 500
+      default: 60
       selector:
         number:
-          min: 100
-          max: 5000
-          step: 100
-          unit_of_measurement: ms
+          min: 10
+          max: 3600
+          step: 10
+          unit_of_measurement: s
           mode: box
-
     transition_time:
       name: Transition Time
       description: Fade time when changing brightness or color (in seconds)
       default: 0.3
       selector:
         number:
-          min: 0
-          max: 10
+          min: 0.0
+          max: 10.0
           step: 0.1
           unit_of_measurement: s
           mode: box
-
 mode: restart
 max_exceeded: silent
-
 variables:
   controller_entity: !input controller_entity
   light_entities: !input light_entities
   enable_color_cycle: !input enable_color_cycle
-
 trigger:
   - platform: state
     entity_id: !input controller_entity
-
 action:
   - alias: Handle controller state
     choose:
-      # ON State
       - conditions:
           - condition: template
-            value_template: >
-              {{ trigger.to_state.state | lower in ['on'] }}
+            value_template: "{{ trigger.to_state.state | lower in ['on'] }}
+
+              "
         sequence:
           - action: light.turn_on
             target:
@@ -138,7 +140,6 @@ action:
                 - !input fixed_hue
                 - !input fixed_saturation
               transition: !input transition_time
-
           - alias: Start color cycle if enabled
             if:
               - condition: template
@@ -147,27 +148,26 @@ action:
               - repeat:
                   while:
                     - condition: template
-                      value_template: >
-                        {{ expand(light_entities)
-                           | selectattr('state', 'equalto', 'on')
-                           | list | count > 0 }}
+                      value_template: "{{ states(controller_entity) | lower == 'on' }}"
                   sequence:
                     - action: light.turn_on
                       target:
                         entity_id: !input light_entities
                       data:
+                        brightness_pct: !input on_brightness
                         hs_color:
-                          - "{{ (repeat.index * 360 / 30) | round(1) }}"
+                          - "{{ ((repeat.index - 1) * 6) % 360 }}"
                           - !input fixed_saturation
                         transition: 0.1
                     - delay:
-                        milliseconds: !input color_cycle_interval
-
-      # NIGHT/NIGHTMODE State
+                        seconds: !input color_cycle_interval
       - conditions:
           - condition: template
-            value_template: >
-              {{ trigger.to_state.state | lower in ['night', 'nightmode'] }}
+            value_template:
+              "{{ trigger.to_state.state | lower in ['night', 'nightmode']
+              }}
+
+              "
         sequence:
           - action: light.turn_on
             target:
@@ -178,25 +178,24 @@ action:
                 - !input fixed_hue
                 - !input fixed_saturation
               transition: !input transition_time
-
-      # OFF State
       - conditions:
           - condition: template
-            value_template: >
-              {{ trigger.to_state.state | lower in ['off'] }}
+            value_template: "{{ trigger.to_state.state | lower in ['off'] }}
+
+              "
         sequence:
           - action: light.turn_off
             target:
               entity_id: !input light_entities
             data:
               transition: !input transition_time
-
     default:
       - alias: Log unknown controller state
         action: system_log.write
         data:
-          message: >
-            RGB Light Controller: Unknown state '{{ trigger.to_state.state }}'
-            from controller '{{ controller_entity }}'.
-            Expected states: On, Off, Night/Nightmode.
+          message:
+            "RGB Light Controller: Unknown state '{{ trigger.to_state.state }}'
+            from controller '{{ controller_entity }}'. Expected states: On, Off, Night/Nightmode.
+
+            "
           level: warning
