@@ -3,9 +3,9 @@ blueprint:
   description: 'Behavior-based day/night detection using built-in Home Assistant
     means. Instead of fixed times, a weighted score of presence and activity signals
     (motion, media players, lights, phone charging, a bedroom occupancy sensor)
-    decides when the house switches to night mode. A schedule helper defines the
-    permitted night window per weekday; two pre-roll offsets let the sensors switch
-    earlier than the schedule edges. Optional Workday sensors add holiday awareness.
+    decides when the house switches to night mode. A Time of Day binary sensor defines
+    the permitted night window; two pre-roll offsets let the sensors switch earlier
+    than the hard edges. Optional Workday sensors add holiday awareness.
 
     The automation toggles a central input_boolean that other automations
     (light/motion controllers, ...) can consume.
@@ -17,7 +17,7 @@ blueprint:
     min_version: 2024.6.0
   input:
     output:
-      name: Output & schedule
+      name: Output & time window
       icon: mdi:theme-light-dark
       collapsed: false
       input:
@@ -33,23 +33,23 @@ blueprint:
               - input_boolean
               multiple: false
               reorder: false
-        sleep_schedule:
-          name: Sleep Schedule
-          description: 'Schedule helper that is ''on'' during the permitted night
-            hours (paint it per weekday). The leading edge is the hard night fallback,
-            the trailing edge the hard day fallback.
+        sleep_tod:
+          name: Sleep Window (Time of Day sensor)
+          description: 'Time of Day binary sensor that is ''on'' during the permitted
+            night hours. Its leading edge is the hard night fallback, its trailing
+            edge the hard day fallback.
 
             '
           selector:
             entity:
               domain:
-              - schedule
+              - binary_sensor
               multiple: false
               reorder: false
         bedtime_pre_roll:
           name: Bedtime Pre-Roll
-          description: 'How many minutes before the schedule starts the sensors may
-            already switch to night mode (if the score is high enough).
+          description: 'How many minutes before the sleep window opens the sensors
+            may already switch to night mode (if the score is high enough).
 
             '
           default: 60
@@ -62,8 +62,8 @@ blueprint:
               mode: box
         wake_pre_roll:
           name: Wake Pre-Roll
-          description: 'How many minutes before the schedule ends a wake signal may
-            already switch to day mode.
+          description: 'How many minutes before the sleep window closes a wake signal
+            may already switch to day mode.
 
             '
           default: 90
@@ -79,17 +79,17 @@ blueprint:
       icon: mdi:calendar-star
       collapsed: true
       input:
-        sleep_schedule_free:
-          name: Sleep Schedule (free days)
-          description: 'Alternative schedule used on non-working days. Leave empty
-            to always use the main schedule.
+        sleep_tod_free:
+          name: Sleep Window (free days)
+          description: 'Alternative Time of Day sensor used on non-working days.
+            Leave empty to always use the main sleep window.
 
             '
           default: {}
           selector:
             entity:
               domain:
-              - schedule
+              - binary_sensor
               multiple: false
               reorder: false
         workday_today_sensor:
@@ -107,9 +107,9 @@ blueprint:
               reorder: false
         workday_tomorrow_sensor:
           name: Workday Sensor (tomorrow)
-          description: 'Second Workday binary_sensor with days_offset 1. Used for the
-            bedtime edge in the evening (you wake up tomorrow). Leave empty to disable
-            holiday handling.
+          description: 'Second Workday binary_sensor with days_offset 1. Used for
+            the bedtime edge in the evening (you wake up tomorrow). Leave empty to
+            disable holiday handling.
 
             '
           default: {}
@@ -126,8 +126,8 @@ blueprint:
       input:
         bedroom_motion:
           name: Bedroom Motion Sensors
-          description: 'Motion sensor(s) closest to the bedroom. Strongest signal for
-            going to bed / waking up.
+          description: 'Motion sensor(s) closest to the bedroom. Strongest signal
+            for going to bed / waking up.
 
             '
           selector:
@@ -246,8 +246,8 @@ blueprint:
               mode: box
         quiet_minutes:
           name: Quiet Minutes
-          description: How long all motion sensors must report no motion to count as
-            quiet.
+          description: How long all motion sensors must report no motion to count
+            as quiet.
           default: 20
           selector:
             number:
@@ -307,8 +307,8 @@ max: 10
 max_exceeded: silent
 variables:
   night_mode_helper: !input night_mode_helper
-  sleep_schedule: !input sleep_schedule
-  sleep_schedule_free: !input sleep_schedule_free
+  sleep_tod: !input sleep_tod
+  sleep_tod_free: !input sleep_tod_free
   workday_today_sensor: !input workday_today_sensor
   workday_tomorrow_sensor: !input workday_tomorrow_sensor
   bedtime_pre_roll: !input bedtime_pre_roll
@@ -328,17 +328,17 @@ variables:
   weight_lights_off: !input weight_lights_off
   weight_quiet: !input weight_quiet
   all_motion: '{{ bedroom_motion + house_motion }}'
-  is_free_day: "{% set wd = workday_tomorrow_sensor if now().hour >= 12 else workday_today_sensor %}\n
-    {{ wd != {} and is_state(wd, 'off') }}\n"
-  active_schedule: "{% if is_free_day and sleep_schedule_free != {} %}{{ sleep_schedule_free
-    }}{% else %}{{ sleep_schedule }}{% endif %}\n"
-  approaching_bedtime: "{% set ev = state_attr(active_schedule, 'next_event') %}\n
-    {{ is_state(active_schedule, 'off') and ev is not none\n   and (ev - now()).total_seconds()
+  is_free_day: "{% set wd = workday_tomorrow_sensor if now().hour >= 12 else workday_today_sensor
+    %}\n{{ wd != {} and is_state(wd, 'off') }}\n"
+  active_tod: "{% if is_free_day and sleep_tod_free != {} %}{{ sleep_tod_free }}{% else
+    %}{{ sleep_tod }}{% endif %}\n"
+  approaching_bedtime: "{% set ev = state_attr(active_tod, 'next_change') %}\n{{
+    is_state(active_tod, 'off') and ev is not none\n   and (ev - now()).total_seconds()
     <= bedtime_pre_roll | float(0) * 60 }}\n"
-  approaching_wake: "{% set ev = state_attr(active_schedule, 'next_event') %}\n {{
-    is_state(active_schedule, 'on') and ev is not none\n   and (ev - now()).total_seconds()
-    <= wake_pre_roll | float(0) * 60 }}\n"
-  in_night_window: '{{ is_state(active_schedule, ''on'') or approaching_bedtime }}'
+  approaching_wake: "{% set ev = state_attr(active_tod, 'next_change') %}\n{{ is_state(active_tod,
+    'on') and ev is not none\n   and (ev - now()).total_seconds() <= wake_pre_roll
+    | float(0) * 60 }}\n"
+  in_night_window: '{{ is_state(active_tod, ''on'') or approaching_bedtime }}'
   bed_score: "{% set ns = namespace(score=0) %}\n{% if presence_charging_sensors |
     length > 0\n   and expand(presence_charging_sensors) | selectattr('state', 'equalto',
     'on') | list | count == presence_charging_sensors | length %}\n  {% set ns.score
@@ -356,12 +356,12 @@ variables:
     * 60 %}\n  {% set ns.score = ns.score + weight_quiet | int(0) %}\n{% endif %}\n{{
     ns.score }}\n"
 trigger:
-- id: schedule_changed
+- id: tod_changed
   platform: state
-  entity_id: !input sleep_schedule
-- id: schedule_changed
+  entity_id: !input sleep_tod
+- id: tod_changed
   platform: state
-  entity_id: !input sleep_schedule_free
+  entity_id: !input sleep_tod_free
 - id: bed_signal
   platform: state
   entity_id: !input presence_charging_sensors
@@ -418,21 +418,21 @@ trigger:
 action:
 - alias: Route based on trigger type
   choose:
-  - alias: Hard night on — schedule started
+  - alias: Hard night on — sleep window opened
     conditions:
     - condition: template
-      value_template: "{{ trigger.id == 'schedule_changed'\n   and trigger.entity_id
-        == active_schedule\n   and is_state(active_schedule, 'on') }}\n"
+      value_template: "{{ trigger.id == 'tod_changed'\n   and trigger.entity_id ==
+        active_tod\n   and is_state(active_tod, 'on') }}\n"
     sequence:
     - alias: Turn on night mode
       service: input_boolean.turn_on
       target:
         entity_id: !input night_mode_helper
-  - alias: Hard day off — schedule ended
+  - alias: Hard day off — sleep window closed
     conditions:
     - condition: template
-      value_template: "{{ trigger.id == 'schedule_changed'\n   and trigger.entity_id
-        == active_schedule\n   and is_state(active_schedule, 'off') }}\n"
+      value_template: "{{ trigger.id == 'tod_changed'\n   and trigger.entity_id ==
+        active_tod\n   and is_state(active_tod, 'off') }}\n"
     sequence:
     - alias: Turn off night mode
       service: input_boolean.turn_off
