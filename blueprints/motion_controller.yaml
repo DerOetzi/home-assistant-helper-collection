@@ -1,10 +1,11 @@
 blueprint:
   name: Motion Controller
-  description: 'Motion-triggered automation with light sensor darkness condition,
+  description:
+    "Motion-triggered automation with light sensor darkness condition,
     night mode and configurable turn-off delay. Supports multiple motion sensors (OR
     logic). Companion: motion_controller_override.yaml for manual override detection.
 
-    '
+    "
   domain: automation
   author: deroetzi
   homeassistant:
@@ -12,49 +13,52 @@ blueprint:
   input:
     motion_sensors:
       name: Motion Sensors
-      description: 'One or more motion sensors. Action is triggered when at least
+      description:
+        "One or more motion sensors. Action is triggered when at least
         one is active (OR logic).
 
-        '
+        "
       selector:
         entity:
           multiple: true
           device_class:
-          - motion
+            - motion
           reorder: false
     blocked_boolean:
       name: Blocked Switch (optional)
-      description: 'input_boolean that temporarily blocks the automation. Set by the
+      description:
+        "input_boolean that temporarily blocks the automation. Set by the
         motion_controller_override blueprint. Leave empty if not needed.
 
-        '
+        "
       default: {}
       selector:
         entity:
           domain:
-          - input_boolean
-          - binary_sensor
+            - input_boolean
+            - binary_sensor
           multiple: false
           reorder: false
     light_sensor:
       name: Light Sensor (optional)
-      description: 'Numeric sensor (e.g. lux) measuring ambient brightness. When
+      description: "Numeric sensor (e.g. lux) measuring ambient brightness. When
         configured, the automation only runs when the value is below the darkness
         threshold. Leave empty to run regardless of light conditions.
 
-        '
+        "
       default: {}
       selector:
         entity:
           domain:
-          - sensor
+            - sensor
           device_class:
-          - illuminance
+            - illuminance
           multiple: false
           reorder: false
     darkness_threshold:
       name: Darkness Threshold
-      description: Sensor value below which it is considered dark. Only used when
+      description:
+        Sensor value below which it is considered dark. Only used when
         a light sensor is configured.
       default: 10
       selector:
@@ -66,32 +70,33 @@ blueprint:
           mode: box
     controlled_lights:
       name: Controlled Lights (optional)
-      description: 'Lights or switches controlled by this automation. When configured,
-        the light sensor is ignored while these are on — prevents false ''bright''
-        readings when the sensor is near the controlled lamp. Leave empty if not needed.
+      description:
+        "Lights or switches controlled by this automation. When configured,
+        the light sensor is ignored while these are on — prevents false 'bright'.
 
-        '
+        "
       default: []
       selector:
         entity:
           domain:
-          - light
-          - switch
+            - light
+            - switch
           multiple: true
           reorder: false
     night_sensor:
       name: Night Sensor (optional)
-      description: 'Sensor that is ''on'' when it is night. When configured, the night
+      description:
+        "Sensor that is 'on' when it is night. When configured, the night
         mode action is used instead of the turn-on action. Leave empty to disable
         night mode.
 
-        '
+        "
       default: {}
       selector:
         entity:
           domain:
-          - binary_sensor
-          - input_boolean
+            - binary_sensor
+            - input_boolean
           multiple: false
           reorder: false
     timer_seconds:
@@ -103,6 +108,21 @@ blueprint:
           max: 7200.0
           step: 5.0
           unit_of_measurement: s
+          mode: box
+    no_motion_timeout:
+      name: No-Motion Timeout (hours)
+      description:
+        "Maximum time to wait for all motion sensors to clear before
+        starting the turn-off delay. Safety net against a sensor stuck in 'on'.
+
+        "
+      default: 2
+      selector:
+        number:
+          min: 1.0
+          max: 24.0
+          step: 1.0
+          unit_of_measurement: h
           mode: box
     on_action:
       name: Turn-On Action
@@ -128,95 +148,105 @@ variables:
   darkness_threshold: !input darkness_threshold
   controlled_lights: !input controlled_lights
   night_sensor: !input night_sensor
-  has_motion: '{{ expand(motion_sensors) | selectattr(''state'', ''equalto'', ''on'')
+  no_motion_timeout: !input no_motion_timeout
+  has_motion: "{{ expand(motion_sensors) | selectattr('state', 'equalto', 'on')
     | list | count > 0 }}
 
-    '
-  is_dark: '{{ light_sensor == {} or (controlled_lights | length > 0 and expand(controlled_lights)
-    | selectattr(''state'', ''equalto'', ''on'') | list | count > 0) or states(light_sensor)
-    | float(0) <= darkness_threshold }}
+    "
+  is_dark:
+    "{{ light_sensor == {}
+    or (controlled_lights | count > 0
+        and expand(controlled_lights) | selectattr('state', 'equalto', 'on') | list | count > 0)
+    or states(light_sensor) | float(0) <= darkness_threshold }}
 
-    '
+    "
 trigger:
-- id: motion_detected
-  platform: state
-  entity_id: !input motion_sensors
-  to: 'on'
-- id: unblocked
-  platform: state
-  entity_id: !input blocked_boolean
-  to: 'off'
-- id: light_becomes_dark
-  platform: numeric_state
-  entity_id: !input light_sensor
-  below: !input darkness_threshold
-- id: night_mode_changed
-  platform: state
-  entity_id: !input night_sensor
-- id: blocked
-  platform: state
-  entity_id: !input blocked_boolean
-  to: 'on'
+  - id: motion_detected
+    platform: state
+    entity_id: !input motion_sensors
+    to: "on"
+  - id: unblocked
+    platform: state
+    entity_id: !input blocked_boolean
+    to: "off"
+  - id: light_becomes_dark
+    platform: numeric_state
+    entity_id: !input light_sensor
+    below: !input darkness_threshold
+  - id: night_mode_changed
+    platform: state
+    entity_id: !input night_sensor
+    to: "on"
+  - id: blocked
+    platform: state
+    entity_id: !input blocked_boolean
+    to: "on"
 condition:
-- condition: or
-  conditions:
-  - condition: template
-    value_template: '{{ trigger.id in [''blocked'', ''unblocked'', ''light_becomes_dark'',
-      ''night_mode_changed''] }}'
-  - condition: and
+  - condition: or
     conditions:
-    - alias: Not blocked
-      condition: template
-      value_template: '{{ blocked_boolean == {} or is_state(blocked_boolean, ''off'')
-        }}
+      - condition: template
+        value_template:
+          "{{ trigger.id in ['blocked', 'unblocked', 'light_becomes_dark',
+          'night_mode_changed'] }}"
+      - condition: and
+        conditions:
+          - alias: Not blocked
+            condition: template
+            value_template:
+              "{{ blocked_boolean == {} or is_state(blocked_boolean, 'off')
+              }}
 
-        '
-    - alias: Dark enough
-      condition: template
-      value_template: '{{ is_dark }}
+              "
+          - alias: Dark enough
+            condition: template
+            value_template: "{{ is_dark }}
 
-        '
+              "
 action:
-- alias: Route based on trigger type
-  choose:
-  - conditions:
-    - condition: template
-      value_template: '{{ trigger.id == ''blocked'' }}'
-    sequence: []
-  - conditions:
-    - condition: template
-      value_template: "{{ trigger.id in ['unblocked', 'light_becomes_dark', 'night_mode_changed']\n
-        \  and not has_motion }}\n"
-    sequence: !input off_action
-  - conditions:
-    - condition: template
-      value_template: '{{ trigger.id == ''motion_detected'' or has_motion }}
-
-        '
-    sequence:
-    - alias: Turn on lights (night mode or normal)
-      choose:
+  - alias: Route based on trigger type
+    choose:
       - conditions:
-        - condition: template
-          value_template: '{{ night_sensor != {} and is_state(night_sensor, ''on'')
-            }}
+          - condition: template
+            value_template: "{{ trigger.id == 'blocked' }}"
+        sequence: []
+      - conditions:
+          - condition: template
+            value_template:
+              "{{ trigger.id in ['unblocked', 'light_becomes_dark', 'night_mode_changed']\n
+              \  and not has_motion }}\n"
+        sequence: !input off_action
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'motion_detected' or has_motion }}
 
-            '
-        sequence: !input nightmode_action
-      default: !input on_action
-    - alias: Wait until all sensors report no motion
-      wait_for_trigger:
-      - platform: template
-        value_template: "{{ expand(motion_sensors)\n   | selectattr('state', 'equalto',
-          'on')\n   | list | count == 0 }}\n"
-      timeout:
-        hours: 2
-    - alias: Wait for turn-off delay
-      delay:
-        seconds: !input timer_seconds
-    - alias: Final check before turning off
-      condition: template
-      value_template: "{{ expand(motion_sensors)\n   | selectattr('state', 'equalto',
-        'on')\n   | list | count == 0 }}\n"
-    - alias: Turn off lights
-      sequence: !input off_action
+              "
+        sequence:
+          - alias: Turn on lights (night mode or normal)
+            choose:
+              - conditions:
+                  - condition: template
+                    value_template:
+                      "{{ night_sensor != {} and is_state(night_sensor, 'on')
+                      }}
+
+                      "
+                sequence: !input nightmode_action
+            default: !input on_action
+          - alias: Wait until all sensors report no motion
+            wait_for_trigger:
+              - platform: template
+                value_template:
+                  "{{ expand(motion_sensors)\n   | selectattr('state', 'equalto',
+                  'on')\n   | list | count == 0 }}\n"
+            timeout:
+              hours: !input no_motion_timeout
+          - alias: Wait for turn-off delay
+            delay:
+              seconds: !input timer_seconds
+          - alias: Final check before turning off
+            condition: template
+            value_template:
+              "{{ expand(motion_sensors)\n   | selectattr('state', 'equalto',
+              'on')\n   | list | count == 0 }}\n"
+          - alias: Turn off lights
+            sequence: !input off_action

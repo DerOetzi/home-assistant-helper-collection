@@ -1,16 +1,17 @@
 blueprint:
   name: Night Mode Detector
-  description: 'Behavior-based day/night detection using built-in Home Assistant
-    means. Instead of fixed times, a weighted score of presence and activity signals
-    (motion, media players, lights, phone charging, a bedroom occupancy sensor)
-    decides when the house switches to night mode. A Time of Day binary sensor defines
-    the permitted night window; two pre-roll offsets let the sensors switch earlier
-    than the hard edges. Optional Workday sensors add holiday awareness.
+  description: >
+    Behavior-based day/night detection using built-in Home Assistant means.
+    Instead of fixed times, a weighted score of presence and activity signals
+    (bedroom/house motion, media players, lights, phone charging, a bedroom
+    occupancy sensor) decides when the house switches to night mode. A Time of
+    Day binary sensor defines the permitted night window; two pre-roll offsets
+    let the sensors switch earlier than the hard edges. Optional Workday sensors
+    add holiday awareness, and an optional presence gate prevents night mode from
+    triggering when nobody is home.
 
     The automation toggles a central input_boolean that other automations
     (light/motion controllers, ...) can consume.
-
-    '
   domain: automation
   author: deroetzi
   homeassistant:
@@ -23,10 +24,9 @@ blueprint:
       input:
         night_mode_helper:
           name: Night Mode Helper
-          description: 'input_boolean that is turned on for night mode and off for
-            day mode. Create it manually and let other automations read it.
-
-            '
+          description: >
+            input_boolean that is turned on for night mode and off for day mode.
+            Create it manually and let other automations read it.
           selector:
             entity:
               domain:
@@ -35,11 +35,10 @@ blueprint:
               reorder: false
         sleep_tod:
           name: Sleep Window (Time of Day sensor)
-          description: 'Time of Day binary sensor that is ''on'' during the permitted
-            night hours. Its leading edge is the hard night fallback, its trailing
-            edge the hard day fallback.
-
-            '
+          description: >
+            Time of Day binary sensor that is 'on' during the permitted night
+            hours. Its leading edge is the hard night fallback, its trailing edge
+            the hard day fallback.
           selector:
             entity:
               domain:
@@ -48,10 +47,9 @@ blueprint:
               reorder: false
         bedtime_pre_roll:
           name: Bedtime Pre-Roll
-          description: 'How many minutes before the sleep window opens the sensors
-            may already switch to night mode (if the score is high enough).
-
-            '
+          description: >
+            How many minutes before the sleep window opens the sensors may
+            already switch to night mode (if the score is high enough).
           default: 60
           selector:
             number:
@@ -62,10 +60,9 @@ blueprint:
               mode: box
         wake_pre_roll:
           name: Wake Pre-Roll
-          description: 'How many minutes before the sleep window closes a wake signal
-            may already switch to day mode.
-
-            '
+          description: >
+            How many minutes before the sleep window closes a wake signal may
+            already switch to day mode.
           default: 90
           selector:
             number:
@@ -74,6 +71,23 @@ blueprint:
               step: 5.0
               unit_of_measurement: min
               mode: box
+    presence:
+      name: Presence gate (optional)
+      icon: mdi:home-account
+      collapsed: true
+      input:
+        presence_entities:
+          name: Presence Entities (optional)
+          description: >
+            person / device_tracker / presence binary_sensor (or a group of
+            those). Soft night mode only switches on while at least one of them
+            is 'home'/'on'. Leave empty to disable the gate (always treated as
+            home). The hard sleep-window edges are NOT gated by presence.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              reorder: false
     holidays:
       name: Holiday handling (optional)
       icon: mdi:calendar-star
@@ -81,11 +95,10 @@ blueprint:
       input:
         sleep_tod_free:
           name: Sleep Window (free days)
-          description: 'Alternative Time of Day sensor used on non-working days.
-            Leave empty to always use the main sleep window.
-
-            '
-          default: {}
+          description: >
+            Alternative Time of Day sensor used on non-working days. Leave empty
+            to always use the main sleep window.
+          default: []
           selector:
             entity:
               domain:
@@ -94,11 +107,10 @@ blueprint:
               reorder: false
         workday_today_sensor:
           name: Workday Sensor (today)
-          description: 'Workday binary_sensor with days_offset 0. Used for the wake
-            edge (the morning is today). Leave empty to disable holiday handling.
-
-            '
-          default: {}
+          description: >
+            Workday binary_sensor with days_offset 0. Used for the wake edge (the
+            morning is today). Leave empty to disable holiday handling.
+          default: []
           selector:
             entity:
               domain:
@@ -107,12 +119,11 @@ blueprint:
               reorder: false
         workday_tomorrow_sensor:
           name: Workday Sensor (tomorrow)
-          description: 'Second Workday binary_sensor with days_offset 1. Used for
-            the bedtime edge in the evening (you wake up tomorrow). Leave empty to
-            disable holiday handling.
-
-            '
-          default: {}
+          description: >
+            Second Workday binary_sensor with days_offset 1. Used for the bedtime
+            edge in the evening (you wake up tomorrow). Leave empty to disable
+            holiday handling.
+          default: []
           selector:
             entity:
               domain:
@@ -126,10 +137,9 @@ blueprint:
       input:
         bedroom_motion:
           name: Bedroom Motion Sensors
-          description: 'Motion sensor(s) closest to the bedroom. Strongest signal
-            for going to bed / waking up.
-
-            '
+          description: >
+            Motion sensor(s) closest to the bedroom. Strongest behavioral signal
+            for going to bed / waking up (own quiet weight + wake trigger).
           selector:
             entity:
               multiple: true
@@ -138,10 +148,9 @@ blueprint:
               reorder: false
         house_motion:
           name: House Motion Sensors (optional)
-          description: 'Motion sensors in the rest of the house. Used to detect that
-            nobody is active anymore.
-
-            '
+          description: >
+            Motion sensors in the rest of the house. Used to detect that nobody
+            is active anymore.
           default: []
           selector:
             entity:
@@ -151,10 +160,8 @@ blueprint:
               reorder: false
         living_area_lights:
           name: Living Area Lights (optional)
-          description: 'Lights of the common/living areas. All off counts as ''nobody
-            active''.
-
-            '
+          description: >
+            Lights of the common/living areas. All off counts as 'nobody active'.
           default: []
           selector:
             entity:
@@ -165,10 +172,9 @@ blueprint:
               reorder: false
         bedroom_lights:
           name: Bedroom Lights (optional)
-          description: 'Bedroom light(s). Turning them on in the wake window counts
-            as a wake signal.
-
-            '
+          description: >
+            Bedroom light(s). All off adds a small night signal; turning one on
+            in the wake window counts as a wake signal.
           default: []
           selector:
             entity:
@@ -179,10 +185,9 @@ blueprint:
               reorder: false
         awake_media_players:
           name: Awake Media Players (optional)
-          description: 'Media players whose active state means someone is awake (e.g.
-            a TV). All off/idle counts towards night mode.
-
-            '
+          description: >
+            Media players whose active state means someone is awake (e.g. a TV).
+            All off/idle counts towards night mode.
           default: []
           selector:
             entity:
@@ -192,10 +197,9 @@ blueprint:
               reorder: false
         presence_charging_sensors:
           name: Charging Sensors (optional)
-          description: 'binary_sensors that are ''on'' while a phone is charging.
-            When all are charging, everyone is likely in bed.
-
-            '
+          description: >
+            binary_sensors that are 'on' while a phone is charging. When all are
+            charging, everyone is likely in bed.
           default: []
           selector:
             entity:
@@ -208,11 +212,10 @@ blueprint:
               reorder: false
         bedroom_occupancy_sensor:
           name: Bedroom Occupancy Sensor (optional)
-          description: 'Numeric sensor that reads higher while the bedroom is occupied
-            (e.g. PM2.5 or CO2). Above the threshold counts as occupied.
-
-            '
-          default: {}
+          description: >
+            Numeric sensor that reads higher while the bedroom is occupied (e.g.
+            PM2.5 or CO2). Above the threshold counts as occupied.
+          default: []
           selector:
             entity:
               domain:
@@ -236,9 +239,11 @@ blueprint:
       input:
         night_score_threshold:
           name: Night Score Threshold
-          description: From this total score (within the night window) the house
-            switches to night mode.
-          default: 5
+          description: >
+            From this total score (within the night window) the house switches to
+            night mode. Default 8 = the pure "idle house" signals alone (7) are
+            just below it, so at least one real bedroom/bed signal is required.
+          default: 8
           selector:
             number:
               min: 1.0
@@ -247,8 +252,8 @@ blueprint:
               mode: box
         quiet_minutes:
           name: Quiet Minutes
-          description: How long all motion sensors must report no motion to count
-            as quiet.
+          description: >
+            How long the motion sensors must report no motion to count as quiet.
           default: 20
           selector:
             number:
@@ -275,6 +280,24 @@ blueprint:
               max: 20.0
               step: 1.0
               mode: box
+        weight_bedroom_quiet:
+          name: Weight — bedroom quiet (no bedroom motion)
+          default: 3
+          selector:
+            number:
+              min: 0.0
+              max: 20.0
+              step: 1.0
+              mode: box
+        weight_house_quiet:
+          name: Weight — house quiet (no house motion)
+          default: 2
+          selector:
+            number:
+              min: 0.0
+              max: 20.0
+              step: 1.0
+              mode: box
         weight_media_off:
           name: Weight — media players off
           default: 2
@@ -293,9 +316,9 @@ blueprint:
               max: 20.0
               step: 1.0
               mode: box
-        weight_quiet:
-          name: Weight — no motion
-          default: 2
+        weight_bedroom_lights_off:
+          name: Weight — bedroom lights off
+          default: 1
           selector:
             number:
               min: 0.0
@@ -303,59 +326,100 @@ blueprint:
               step: 1.0
               mode: box
   source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/night_mode_detector.yaml
-mode: queued
-max: 10
-max_exceeded: silent
+
+mode: restart
+
 variables:
   night_mode_helper: !input night_mode_helper
   sleep_tod: !input sleep_tod
-  sleep_tod_free: !input sleep_tod_free
-  workday_today_sensor: !input workday_today_sensor
-  workday_tomorrow_sensor: !input workday_tomorrow_sensor
   bedtime_pre_roll: !input bedtime_pre_roll
   wake_pre_roll: !input wake_pre_roll
+  presence_entities: !input presence_entities
   bedroom_motion: !input bedroom_motion
   house_motion: !input house_motion
   living_area_lights: !input living_area_lights
+  bedroom_lights: !input bedroom_lights
   awake_media_players: !input awake_media_players
   presence_charging_sensors: !input presence_charging_sensors
-  bedroom_occupancy_sensor: !input bedroom_occupancy_sensor
   bedroom_occupancy_threshold: !input bedroom_occupancy_threshold
   night_score_threshold: !input night_score_threshold
   quiet_minutes: !input quiet_minutes
   weight_charging: !input weight_charging
   weight_bedroom_occupancy: !input weight_bedroom_occupancy
+  weight_bedroom_quiet: !input weight_bedroom_quiet
+  weight_house_quiet: !input weight_house_quiet
   weight_media_off: !input weight_media_off
   weight_lights_off: !input weight_lights_off
-  weight_quiet: !input weight_quiet
-  all_motion: '{{ bedroom_motion + house_motion }}'
-  is_free_day: "{% set wd = workday_tomorrow_sensor if now().hour >= 12 else workday_today_sensor
-    %}\n{{ wd != {} and is_state(wd, 'off') }}\n"
-  active_tod: "{% if is_free_day and sleep_tod_free != {} %}{{ sleep_tod_free }}{% else
-    %}{{ sleep_tod }}{% endif %}\n"
-  approaching_bedtime: "{% set ev = state_attr(active_tod, 'after') | as_timestamp(0)
-    %}\n{{ is_state(active_tod, 'off') and ev > 0\n   and (ev - now() | as_timestamp)
-    <= bedtime_pre_roll | float(0) * 60 }}\n"
-  approaching_wake: "{% set ev = state_attr(active_tod, 'before') | as_timestamp(0)
-    %}\n{{ is_state(active_tod, 'on') and ev > 0\n   and (ev - now() | as_timestamp)
-    <= wake_pre_roll | float(0) * 60 }}\n"
-  in_night_window: '{{ is_state(active_tod, ''on'') or approaching_bedtime }}'
-  bed_score: "{% set ns = namespace(score=0) %}\n{% if presence_charging_sensors |
-    length > 0\n   and expand(presence_charging_sensors) | selectattr('state', 'equalto',
-    'on') | list | count == presence_charging_sensors | length %}\n  {% set ns.score
-    = ns.score + weight_charging | int(0) %}\n{% endif %}\n{% if bedroom_occupancy_sensor
-    != {}\n   and states(bedroom_occupancy_sensor) | float(0) > bedroom_occupancy_threshold
-    | float(0) %}\n  {% set ns.score = ns.score + weight_bedroom_occupancy | int(0)
-    %}\n{% endif %}\n{% if awake_media_players | length > 0\n   and expand(awake_media_players)
-    | selectattr('state', 'in', ['playing', 'on']) | list | count == 0 %}\n  {% set
-    ns.score = ns.score + weight_media_off | int(0) %}\n{% endif %}\n{% if living_area_lights
-    | length > 0\n   and expand(living_area_lights) | selectattr('state', 'equalto',
-    'on') | list | count == 0 %}\n  {% set ns.score = ns.score + weight_lights_off
-    | int(0) %}\n{% endif %}\n{% if all_motion | length > 0\n   and expand(all_motion)
-    | selectattr('state', 'equalto', 'on') | list | count == 0\n   and (now() - (expand(all_motion)
-    | map(attribute='last_changed') | max)).total_seconds() >= quiet_minutes | float(0)
-    * 60 %}\n  {% set ns.score = ns.score + weight_quiet | int(0) %}\n{% endif %}\n{{
-    ns.score }}\n"
+  weight_bedroom_lights_off: !input weight_bedroom_lights_off
+
+  # Raw optional single-entity inputs ([] when unset)
+  sleep_tod_free_raw: !input sleep_tod_free
+  workday_today_raw: !input workday_today_sensor
+  workday_tomorrow_raw: !input workday_tomorrow_sensor
+  bedroom_occupancy_raw: !input bedroom_occupancy_sensor
+
+  # Normalize to a clean entity_id string or none (avoids [] / {} pitfalls)
+  sleep_tod_free: "{{ sleep_tod_free_raw if sleep_tod_free_raw is string and sleep_tod_free_raw else none }}"
+  workday_today_sensor: "{{ workday_today_raw if workday_today_raw is string and workday_today_raw else none }}"
+  workday_tomorrow_sensor: "{{ workday_tomorrow_raw if workday_tomorrow_raw is string and workday_tomorrow_raw else none }}"
+  bedroom_occupancy_sensor: "{{ bedroom_occupancy_raw if bedroom_occupancy_raw is string and bedroom_occupancy_raw else none }}"
+
+  is_free_day: >-
+    {% set wd = workday_tomorrow_sensor if now().hour >= 12 else workday_today_sensor %}
+    {{ wd is not none and is_state(wd, 'off') }}
+
+  active_tod: "{{ sleep_tod_free if (is_free_day and sleep_tod_free is not none) else sleep_tod }}"
+
+  someone_home: >-
+    {{ presence_entities | length == 0
+       or expand(presence_entities) | selectattr('state', 'in', ['home', 'on']) | list | count > 0 }}
+
+  approaching_bedtime: >-
+    {% set ev = state_attr(active_tod, 'after') | as_timestamp(0) %}
+    {{ is_state(active_tod, 'off') and ev > 0
+       and (ev - now() | as_timestamp) <= bedtime_pre_roll | float(0) * 60 }}
+
+  approaching_wake: >-
+    {% set ev = state_attr(active_tod, 'before') | as_timestamp(0) %}
+    {{ is_state(active_tod, 'on') and ev > 0
+       and (ev - now() | as_timestamp) <= wake_pre_roll | float(0) * 60 }}
+
+  in_night_window: "{{ is_state(active_tod, 'on') or approaching_bedtime }}"
+
+  bed_score: >-
+    {% set ns = namespace(score=0) %}
+    {% if presence_charging_sensors | length > 0
+       and expand(presence_charging_sensors) | selectattr('state', 'equalto', 'on') | list | count == presence_charging_sensors | length %}
+      {% set ns.score = ns.score + weight_charging | int(0) %}
+    {% endif %}
+    {% if bedroom_occupancy_sensor is not none
+       and states(bedroom_occupancy_sensor) | float(0) > bedroom_occupancy_threshold | float(0) %}
+      {% set ns.score = ns.score + weight_bedroom_occupancy | int(0) %}
+    {% endif %}
+    {% if bedroom_motion | length > 0
+       and expand(bedroom_motion) | selectattr('state', 'equalto', 'on') | list | count == 0
+       and (now() - (expand(bedroom_motion) | map(attribute='last_changed') | max)).total_seconds() >= quiet_minutes | float(0) * 60 %}
+      {% set ns.score = ns.score + weight_bedroom_quiet | int(0) %}
+    {% endif %}
+    {% if house_motion | length > 0
+       and expand(house_motion) | selectattr('state', 'equalto', 'on') | list | count == 0
+       and (now() - (expand(house_motion) | map(attribute='last_changed') | max)).total_seconds() >= quiet_minutes | float(0) * 60 %}
+      {% set ns.score = ns.score + weight_house_quiet | int(0) %}
+    {% endif %}
+    {% if awake_media_players | length > 0
+       and expand(awake_media_players) | selectattr('state', 'in', ['playing', 'on']) | list | count == 0 %}
+      {% set ns.score = ns.score + weight_media_off | int(0) %}
+    {% endif %}
+    {% if living_area_lights | length > 0
+       and expand(living_area_lights) | selectattr('state', 'equalto', 'on') | list | count == 0 %}
+      {% set ns.score = ns.score + weight_lights_off | int(0) %}
+    {% endif %}
+    {% if bedroom_lights | length > 0
+       and expand(bedroom_lights) | selectattr('state', 'equalto', 'on') | list | count == 0 %}
+      {% set ns.score = ns.score + weight_bedroom_lights_off | int(0) %}
+    {% endif %}
+    {{ ns.score }}
+
 trigger:
 - id: tod_changed
   platform: state
@@ -372,6 +436,9 @@ trigger:
 - id: bed_signal
   platform: state
   entity_id: !input living_area_lights
+- id: bed_signal
+  platform: state
+  entity_id: !input bedroom_lights
 - id: bed_signal
   platform: state
   entity_id: !input bedroom_occupancy_sensor
@@ -416,14 +483,16 @@ trigger:
 - id: tick
   platform: time_pattern
   minutes: /5
+
 action:
 - alias: Route based on trigger type
   choose:
   - alias: Hard night on — sleep window opened
     conditions:
     - condition: template
-      value_template: "{{ trigger.id == 'tod_changed'\n   and trigger.entity_id ==
-        active_tod\n   and is_state(active_tod, 'on') }}\n"
+      value_template: >-
+        {{ trigger.id == 'tod_changed' and trigger.entity_id == active_tod
+           and is_state(active_tod, 'on') }}
     sequence:
     - alias: Turn on night mode
       service: input_boolean.turn_on
@@ -432,24 +501,26 @@ action:
   - alias: Hard day off — sleep window closed
     conditions:
     - condition: template
-      value_template: "{{ trigger.id == 'tod_changed'\n   and trigger.entity_id ==
-        active_tod\n   and is_state(active_tod, 'off') }}\n"
+      value_template: >-
+        {{ trigger.id == 'tod_changed' and trigger.entity_id == active_tod
+           and is_state(active_tod, 'off') }}
     sequence:
     - alias: Turn off night mode
       service: input_boolean.turn_off
       target:
         entity_id: !input night_mode_helper
-  - alias: Soft night on — score reached within window
+  - alias: Soft night on — score reached within window and someone home
     conditions:
     - condition: template
-      value_template: '{{ trigger.id in [''bed_signal'', ''quiet_reached'', ''tick'']
-        }}'
+      value_template: "{{ trigger.id in ['bed_signal', 'quiet_reached', 'tick'] }}"
     - condition: template
-      value_template: '{{ is_state(night_mode_helper, ''off'') }}'
+      value_template: "{{ is_state(night_mode_helper, 'off') }}"
     - condition: template
-      value_template: '{{ in_night_window }}'
+      value_template: "{{ in_night_window }}"
     - condition: template
-      value_template: '{{ bed_score | int(0) >= night_score_threshold | int(0) }}'
+      value_template: "{{ someone_home }}"
+    - condition: template
+      value_template: "{{ bed_score | int(0) >= night_score_threshold | int(0) }}"
     sequence:
     - alias: Turn on night mode
       service: input_boolean.turn_on
@@ -458,11 +529,11 @@ action:
   - alias: Soft day off — wake signal within wake window
     conditions:
     - condition: template
-      value_template: '{{ trigger.id == ''wake_signal'' }}'
+      value_template: "{{ trigger.id == 'wake_signal' }}"
     - condition: template
-      value_template: '{{ is_state(night_mode_helper, ''on'') }}'
+      value_template: "{{ is_state(night_mode_helper, 'on') }}"
     - condition: template
-      value_template: '{{ approaching_wake }}'
+      value_template: "{{ approaching_wake }}"
     sequence:
     - alias: Turn off night mode
       service: input_boolean.turn_off
