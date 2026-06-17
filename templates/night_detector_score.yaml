@@ -1,0 +1,215 @@
+# Debug-Sensor für Night Mode Detector
+# Konfiguration spiegelt die Automation "Erkennung Nachtmodus" exakt wider.
+#
+# Signalkategorien:
+#   DIREKT  (immer gezählt):
+#     - Beide Handys laden         → weight 4
+#     - PM2.5 > 12                 → weight 4
+#   WIND-DOWN (nur wenn effektiv anwesend):
+#     - Alle 7 Außen-Melder ruhig  → weight 2
+#     - TV aus                     → weight 2
+#     - Wohnlichter aus            → weight 2
+#     - Schlaflicht aus            → weight 1
+#
+# Max direkt: 8 | Max Wind-Down: 7 | Threshold: 10
+# → Immer mind. ein direktes Bett-Signal nötig zum Schalten.
+
+template:
+  - trigger:
+      - trigger: time_pattern
+        minutes: "/1"
+      - trigger: state
+        entity_id:
+          - binary_sensor.atlan_is_charging
+          - binary_sensor.keksphone_is_charging
+          - sensor.luftfilter_schlafzimmer_pm25
+          - binary_sensor.bewegungsmelder_flurdgtreppe_occupancy
+          - binary_sensor.bewegungsmelder_flurdg_occupancy
+          - binary_sensor.bewegungsmelder_flureghinten_occupancy
+          - binary_sensor.bewegungsmelder_fluregvorne_occupancy
+          - binary_sensor.bewegungsmelder_fluroghinten_occupancy
+          - binary_sensor.bewegungsmelder_flurogtreppe_occupancy
+          - binary_sensor.bewegungsmelder_flurogvorne_occupancy
+          - media_player.fernseher_im_wohnzimmer_2
+          - light.licht_wohnzimmerstehlampe
+          - switch.licht_wohnzimmerdecke
+          - light.gruppe_esszimmer
+          - switch.licht_arbeitszimmer
+          - light.gruppe_schlafzimmer
+          - binary_sensor.anwesenheit
+          - binary_sensor.arbeitstag_schlafzeitfenster
+          - binary_sensor.freier_tag_schlafzeitfenster
+          - binary_sensor.workday_sensor
+          - binary_sensor.workday_morgen
+          - sun.sun
+    sensor:
+      - name: Nachtmodus Score Debug
+        unique_id: nachtmodus_score_debug
+        icon: mdi:counter
+        unit_of_measurement: "Pkt"
+        state_class: measurement
+        state: >-
+          {%- set quiet_secs    = 30 * 60 -%}
+          {%- set occ_threshold = 12 -%}
+          {%- set sun_elev_threshold = -3 -%}
+          {%- set w_charging    = 4 -%}
+          {%- set w_occupancy   = 4 -%}
+          {%- set w_motion      = 2 -%}
+          {%- set w_media       = 2 -%}
+          {%- set w_living      = 2 -%}
+          {%- set w_bedroom_lt  = 1 -%}
+          {%- set charging = ['binary_sensor.atlan_is_charging',
+                              'binary_sensor.keksphone_is_charging'] -%}
+          {%- set motion   = ['binary_sensor.bewegungsmelder_flurdgtreppe_occupancy',
+                              'binary_sensor.bewegungsmelder_flurdg_occupancy',
+                              'binary_sensor.bewegungsmelder_flureghinten_occupancy',
+                              'binary_sensor.bewegungsmelder_fluregvorne_occupancy',
+                              'binary_sensor.bewegungsmelder_fluroghinten_occupancy',
+                              'binary_sensor.bewegungsmelder_flurogtreppe_occupancy',
+                              'binary_sensor.bewegungsmelder_flurogvorne_occupancy'] -%}
+          {%- set media    = ['media_player.fernseher_im_wohnzimmer_2'] -%}
+          {%- set living   = ['light.licht_wohnzimmerstehlampe',
+                              'switch.licht_wohnzimmerdecke',
+                              'light.gruppe_esszimmer',
+                              'switch.licht_arbeitszimmer'] -%}
+          {%- set bed_lt   = ['light.gruppe_schlafzimmer'] -%}
+          {%- set presence = ['binary_sensor.anwesenheit'] -%}
+          {%- set all_charging = charging | length > 0
+                and expand(charging) | selectattr('state', 'equalto', 'on') | list | count == charging | length -%}
+          {%- set someone_home = presence | length == 0
+                or expand(presence) | selectattr('state', 'in', ['home', 'on']) | list | count > 0 -%}
+          {%- set present = someone_home or all_charging -%}
+          {%- set sun_dark = state_attr('sun.sun', 'elevation') | float(0) < sun_elev_threshold -%}
+          {%- set ns = namespace(score=0) -%}
+          {%- if all_charging -%}
+            {%- set ns.score = ns.score + w_charging -%}
+          {%- endif -%}
+          {%- if states('sensor.luftfilter_schlafzimmer_pm25') | float(0) > occ_threshold -%}
+            {%- set ns.score = ns.score + w_occupancy -%}
+          {%- endif -%}
+          {%- if present -%}
+            {%- if expand(motion) | selectattr('state', 'equalto', 'on') | list | count == 0
+                   and (now() - (expand(motion) | map(attribute='last_changed') | max)).total_seconds() >= quiet_secs -%}
+              {%- set ns.score = ns.score + w_motion -%}
+            {%- endif -%}
+            {%- if expand(media) | selectattr('state', 'in', ['playing', 'on']) | list | count == 0 -%}
+              {%- set ns.score = ns.score + w_media -%}
+            {%- endif -%}
+            {%- if sun_dark and expand(living) | selectattr('state', 'equalto', 'on') | list | count == 0 -%}
+              {%- set ns.score = ns.score + w_living -%}
+            {%- endif -%}
+            {%- if expand(bed_lt) | selectattr('state', 'equalto', 'on') | list | count == 0 -%}
+              {%- set ns.score = ns.score + w_bedroom_lt -%}
+            {%- endif -%}
+          {%- endif -%}
+          {{ ns.score }}
+        attributes:
+          schwelle: 10
+          max_direkt: 8
+          max_wind_down: 7
+          # Präsenz
+          jemand_zuhause: >-
+            {{ expand(['binary_sensor.anwesenheit'])
+               | selectattr('state', 'in', ['home', 'on']) | list | count > 0 }}
+          alle_laden: >-
+            {%- set c = ['binary_sensor.atlan_is_charging', 'binary_sensor.keksphone_is_charging'] -%}
+            {{ expand(c) | selectattr('state', 'equalto', 'on') | list | count == c | length }}
+          effektiv_anwesend: >-
+            {%- set c = ['binary_sensor.atlan_is_charging', 'binary_sensor.keksphone_is_charging'] -%}
+            {%- set ac = expand(c) | selectattr('state', 'equalto', 'on') | list | count == c | length -%}
+            {%- set sh = expand(['binary_sensor.anwesenheit'])
+                         | selectattr('state', 'in', ['home', 'on']) | list | count > 0 -%}
+            {{ sh or ac }}
+          # Direkte Bett-Signale
+          punkte_laden: >-
+            {%- set c = ['binary_sensor.atlan_is_charging', 'binary_sensor.keksphone_is_charging'] -%}
+            {{ 4 if expand(c) | selectattr('state', 'equalto', 'on') | list | count == c | length else 0 }}
+          punkte_belegung: >-
+            {{ 4 if states('sensor.luftfilter_schlafzimmer_pm25') | float(0) > 12 else 0 }}
+          pm25_aktuell: >-
+            {{ states('sensor.luftfilter_schlafzimmer_pm25') | float(0) }}
+          # Wind-Down-Signale
+          punkte_aussen_ruhig: >-
+            {%- set c = ['binary_sensor.atlan_is_charging', 'binary_sensor.keksphone_is_charging'] -%}
+            {%- set ac = expand(c) | selectattr('state', 'equalto', 'on') | list | count == c | length -%}
+            {%- set sh = expand(['binary_sensor.anwesenheit'])
+                         | selectattr('state', 'in', ['home', 'on']) | list | count > 0 -%}
+            {%- set m = ['binary_sensor.bewegungsmelder_flurdgtreppe_occupancy',
+                         'binary_sensor.bewegungsmelder_flurdg_occupancy',
+                         'binary_sensor.bewegungsmelder_flureghinten_occupancy',
+                         'binary_sensor.bewegungsmelder_fluregvorne_occupancy',
+                         'binary_sensor.bewegungsmelder_fluroghinten_occupancy',
+                         'binary_sensor.bewegungsmelder_flurogtreppe_occupancy',
+                         'binary_sensor.bewegungsmelder_flurogvorne_occupancy'] -%}
+            {{ 2 if ((sh or ac)
+                     and expand(m) | selectattr('state', 'equalto', 'on') | list | count == 0
+                     and (now() - (expand(m) | map(attribute='last_changed') | max)).total_seconds() >= 30 * 60)
+               else 0 }}
+          letzter_bewegung_vor_min: >-
+            {%- set m = ['binary_sensor.bewegungsmelder_flurdgtreppe_occupancy',
+                         'binary_sensor.bewegungsmelder_flurdg_occupancy',
+                         'binary_sensor.bewegungsmelder_flureghinten_occupancy',
+                         'binary_sensor.bewegungsmelder_fluregvorne_occupancy',
+                         'binary_sensor.bewegungsmelder_fluroghinten_occupancy',
+                         'binary_sensor.bewegungsmelder_flurogtreppe_occupancy',
+                         'binary_sensor.bewegungsmelder_flurogvorne_occupancy'] -%}
+            {{ ((now() - (expand(m) | map(attribute='last_changed') | max)).total_seconds() / 60) | round(1) }}
+          letzter_bewegung_melder: >-
+            {%- set m = ['binary_sensor.bewegungsmelder_flurdgtreppe_occupancy',
+                         'binary_sensor.bewegungsmelder_flurdg_occupancy',
+                         'binary_sensor.bewegungsmelder_flureghinten_occupancy',
+                         'binary_sensor.bewegungsmelder_fluregvorne_occupancy',
+                         'binary_sensor.bewegungsmelder_fluroghinten_occupancy',
+                         'binary_sensor.bewegungsmelder_flurogtreppe_occupancy',
+                         'binary_sensor.bewegungsmelder_flurogvorne_occupancy'] -%}
+            {%- set latest = expand(m) | sort(attribute='last_changed') | last -%}
+            {{ latest.name }}
+          punkte_medien_aus: >-
+            {%- set c = ['binary_sensor.atlan_is_charging', 'binary_sensor.keksphone_is_charging'] -%}
+            {%- set ac = expand(c) | selectattr('state', 'equalto', 'on') | list | count == c | length -%}
+            {%- set sh = expand(['binary_sensor.anwesenheit'])
+                         | selectattr('state', 'in', ['home', 'on']) | list | count > 0 -%}
+            {{ 2 if ((sh or ac) and expand(['media_player.fernseher_im_wohnzimmer_2'])
+                     | selectattr('state', 'in', ['playing', 'on']) | list | count == 0) else 0 }}
+          punkte_wohnlicht_aus: >-
+            {%- set c = ['binary_sensor.atlan_is_charging', 'binary_sensor.keksphone_is_charging'] -%}
+            {%- set ac = expand(c) | selectattr('state', 'equalto', 'on') | list | count == c | length -%}
+            {%- set sh = expand(['binary_sensor.anwesenheit'])
+                         | selectattr('state', 'in', ['home', 'on']) | list | count > 0 -%}
+            {%- set l = ['light.licht_wohnzimmerstehlampe', 'switch.licht_wohnzimmerdecke',
+                         'light.gruppe_esszimmer', 'switch.licht_arbeitszimmer'] -%}
+            {%- set sun_dark = state_attr('sun.sun', 'elevation') | float(0) < -3 -%}
+            {{ 2 if (sun_dark and (sh or ac) and expand(l) | selectattr('state', 'equalto', 'on') | list | count == 0) else 0 }}
+          punkte_schlaflicht_aus: >-
+            {%- set c = ['binary_sensor.atlan_is_charging', 'binary_sensor.keksphone_is_charging'] -%}
+            {%- set ac = expand(c) | selectattr('state', 'equalto', 'on') | list | count == c | length -%}
+            {%- set sh = expand(['binary_sensor.anwesenheit'])
+                         | selectattr('state', 'in', ['home', 'on']) | list | count > 0 -%}
+            {{ 1 if ((sh or ac) and expand(['light.gruppe_schlafzimmer'])
+                     | selectattr('state', 'equalto', 'on') | list | count == 0) else 0 }}
+          sonne_elevation: >-
+            {{ state_attr('sun.sun', 'elevation') | float(0) | round(1) }}
+          licht_gate_aktiv: >-
+            {{ state_attr('sun.sun', 'elevation') | float(0) < -3 }}
+          # Zeitfenster
+          ist_freier_tag: >-
+            {%- set wd = 'binary_sensor.workday_morgen' if now().hour >= 12 else 'binary_sensor.workday_sensor' -%}
+            {{ is_state(wd, 'off') }}
+          aktives_zeitfenster: >-
+            {%- set wd = 'binary_sensor.workday_morgen' if now().hour >= 12 else 'binary_sensor.workday_sensor' -%}
+            {{ 'binary_sensor.freier_tag_schlafzeitfenster' if is_state(wd, 'off') else 'binary_sensor.arbeitstag_schlafzeitfenster' }}
+          im_nachtfenster: >-
+            {%- set wd = 'binary_sensor.workday_morgen' if now().hour >= 12 else 'binary_sensor.workday_sensor' -%}
+            {%- set tod = 'binary_sensor.freier_tag_schlafzeitfenster' if is_state(wd, 'off') else 'binary_sensor.arbeitstag_schlafzeitfenster' -%}
+            {%- set ev = state_attr(tod, 'after') | as_timestamp(0) -%}
+            {{ is_state(tod, 'on') or (is_state(tod, 'off') and ev > 0 and (ev - now() | as_timestamp) <= 30 * 60) }}
+          annaeherung_schlafenszeit: >-
+            {%- set wd = 'binary_sensor.workday_morgen' if now().hour >= 12 else 'binary_sensor.workday_sensor' -%}
+            {%- set tod = 'binary_sensor.freier_tag_schlafzeitfenster' if is_state(wd, 'off') else 'binary_sensor.arbeitstag_schlafzeitfenster' -%}
+            {%- set ev = state_attr(tod, 'after') | as_timestamp(0) -%}
+            {{ is_state(tod, 'off') and ev > 0 and (ev - now() | as_timestamp) <= 30 * 60 }}
+          annaeherung_aufwachen: >-
+            {%- set wd = 'binary_sensor.workday_morgen' if now().hour >= 12 else 'binary_sensor.workday_sensor' -%}
+            {%- set tod = 'binary_sensor.freier_tag_schlafzeitfenster' if is_state(wd, 'off') else 'binary_sensor.arbeitstag_schlafzeitfenster' -%}
+            {%- set ev = state_attr(tod, 'before') | as_timestamp(0) -%}
+            {{ is_state(tod, 'on') and ev > 0 and (ev - now() | as_timestamp) <= 30 * 60 }}

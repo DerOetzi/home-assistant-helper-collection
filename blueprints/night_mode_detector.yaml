@@ -3,12 +3,27 @@ blueprint:
   description: >
     Behavior-based day/night detection using built-in Home Assistant means.
     Instead of fixed times, a weighted score of presence and activity signals
-    (bedroom/house motion, media players, lights, phone charging, a bedroom
-    occupancy sensor) decides when the house switches to night mode. A Time of
-    Day binary sensor defines the permitted night window; two pre-roll offsets
-    let the sensors switch earlier than the hard edges. Optional Workday sensors
-    add holiday awareness, and an optional presence gate prevents night mode from
-    triggering when nobody is home.
+    decides when the house switches to night mode.
+
+    Signal categories:
+
+    DIRECT BED SIGNALS (always counted, require a present person by nature):
+    - All configured phones charging → everyone likely in bed
+    - Bedroom occupancy sensor above threshold → bedroom occupied
+
+    WIND-DOWN SIGNALS (only counted while someone is home):
+    - All outside motion sensors quiet for quiet_minutes → nobody active
+    - All awake media players off/idle → nobody watching TV etc.
+    - All living area lights off → common areas dark
+    - Bedroom lights off → light switched off before sleep
+
+    Presence interlock: wind-down signals contribute 0 while nobody is home,
+    because an empty house trivially satisfies them. Presence is established by
+    the presence entities OR by all phones charging (which is itself a bed signal).
+
+    A Time of Day binary sensor defines the permitted night window; two pre-roll
+    offsets let the sensors switch earlier than the hard edges. Optional Workday
+    sensors add holiday awareness.
 
     The automation toggles a central input_boolean that other automations
     (light/motion controllers, ...) can consume.
@@ -80,9 +95,12 @@ blueprint:
           name: Presence Entities (optional)
           description: >
             person / device_tracker / presence binary_sensor (or a group of
-            those). Soft night mode only switches on while at least one of them
-            is 'home'/'on'. Leave empty to disable the gate (always treated as
-            home). The hard sleep-window edges are NOT gated by presence.
+            those). Together with "all phones charging" this establishes that
+            someone is home. While nobody is home, the wind-down signals
+            contribute 0 and soft night mode will not switch on. Leave empty to
+            rely on charging only; if charging is also empty the home is always
+            treated as present. The hard sleep-window edges are NOT gated by
+            presence.
           default: []
           selector:
             entity:
@@ -135,33 +153,25 @@ blueprint:
       icon: mdi:motion-sensor
       collapsed: false
       input:
-        bedroom_motion:
-          name: Bedroom Motion Sensors
+        outside_motion:
+          name: Motion Sensors (outside bedroom)
           description: >
-            Motion sensor(s) closest to the bedroom. Strongest behavioral signal
-            for going to bed / waking up (own quiet weight + wake trigger).
+            All motion/occupancy sensors outside the bedroom — hallways, living
+            room, kitchen, etc. All quiet for quiet_minutes counts as a wind-down
+            signal. Also used as a wake trigger (any goes 'on').
+            This is a wind-down signal and is gated behind presence.
           selector:
             entity:
               multiple: true
               device_class:
               - motion
-              reorder: false
-        house_motion:
-          name: House Motion Sensors (optional)
-          description: >
-            Motion sensors in the rest of the house. Used to detect that nobody
-            is active anymore.
-          default: []
-          selector:
-            entity:
-              multiple: true
-              device_class:
-              - motion
+              - occupancy
               reorder: false
         living_area_lights:
           name: Living Area Lights (optional)
           description: >
-            Lights of the common/living areas. All off counts as 'nobody active'.
+            Lights of the common/living areas. All off counts as a wind-down
+            signal. Gated behind presence.
           default: []
           selector:
             entity:
@@ -173,8 +183,8 @@ blueprint:
         bedroom_lights:
           name: Bedroom Lights (optional)
           description: >
-            Bedroom light(s). All off adds a small night signal; turning one on
-            in the wake window counts as a wake signal.
+            Bedroom light(s). All off adds a small wind-down signal (gated behind
+            presence); turning one on in the wake window counts as a wake signal.
           default: []
           selector:
             entity:
@@ -187,7 +197,7 @@ blueprint:
           name: Awake Media Players (optional)
           description: >
             Media players whose active state means someone is awake (e.g. a TV).
-            All off/idle counts towards night mode.
+            All off/idle counts as a wind-down signal. Gated behind presence.
           default: []
           selector:
             entity:
@@ -199,7 +209,7 @@ blueprint:
           name: Charging Sensors (optional)
           description: >
             binary_sensors that are 'on' while a phone is charging. When all are
-            charging, everyone is likely in bed.
+            charging this is a direct bed signal AND proof of presence.
           default: []
           selector:
             entity:
@@ -214,7 +224,7 @@ blueprint:
           name: Bedroom Occupancy Sensor (optional)
           description: >
             Numeric sensor that reads higher while the bedroom is occupied (e.g.
-            PM2.5 or CO2). Above the threshold counts as occupied.
+            PM2.5 or CO2). Above the threshold counts as a direct bed signal.
           default: []
           selector:
             entity:
@@ -241,9 +251,10 @@ blueprint:
           name: Night Score Threshold
           description: >
             From this total score (within the night window) the house switches to
-            night mode. Default 8 = the pure "idle house" signals alone (7) are
-            just below it, so at least one real bedroom/bed signal is required.
-          default: 8
+            night mode. Default 10: requires at least one direct bed signal (charging
+            or occupancy) on top of a fully wound-down house (max wind-down = 7),
+            since an empty or idle house alone only reaches 7.
+          default: 10
           selector:
             number:
               min: 1.0
@@ -253,7 +264,8 @@ blueprint:
         quiet_minutes:
           name: Quiet Minutes
           description: >
-            How long the motion sensors must report no motion to count as quiet.
+            How long the outside motion sensors must report no motion/occupancy
+            to count as quiet.
           default: 20
           selector:
             number:
@@ -263,8 +275,8 @@ blueprint:
               unit_of_measurement: min
               mode: box
         weight_charging:
-          name: Weight — all phones charging
-          default: 3
+          name: Weight — all phones charging (direct bed signal)
+          default: 4
           selector:
             number:
               min: 0.0
@@ -272,25 +284,16 @@ blueprint:
               step: 1.0
               mode: box
         weight_bedroom_occupancy:
-          name: Weight — bedroom occupied
-          default: 3
+          name: Weight — bedroom occupied (direct bed signal)
+          default: 4
           selector:
             number:
               min: 0.0
               max: 20.0
               step: 1.0
               mode: box
-        weight_bedroom_quiet:
-          name: Weight — bedroom quiet (no bedroom motion)
-          default: 3
-          selector:
-            number:
-              min: 0.0
-              max: 20.0
-              step: 1.0
-              mode: box
-        weight_house_quiet:
-          name: Weight — house quiet (no house motion)
+        weight_outside_quiet:
+          name: Weight — outside motion quiet (wind-down signal)
           default: 2
           selector:
             number:
@@ -299,7 +302,7 @@ blueprint:
               step: 1.0
               mode: box
         weight_media_off:
-          name: Weight — media players off
+          name: Weight — media players off (wind-down signal)
           default: 2
           selector:
             number:
@@ -308,7 +311,7 @@ blueprint:
               step: 1.0
               mode: box
         weight_lights_off:
-          name: Weight — living area lights off
+          name: Weight — living area lights off (wind-down signal)
           default: 2
           selector:
             number:
@@ -317,13 +320,27 @@ blueprint:
               step: 1.0
               mode: box
         weight_bedroom_lights_off:
-          name: Weight — bedroom lights off
+          name: Weight — bedroom lights off (wind-down signal)
           default: 1
           selector:
             number:
               min: 0.0
               max: 20.0
               step: 1.0
+              mode: box
+        sun_elevation_threshold:
+          name: Sun Elevation Threshold
+          description: >
+            Living area light signals only count when sun.sun elevation is below
+            this value (degrees). Default -3 = civil dusk, it is genuinely dark.
+            Bedroom lights are always counted regardless of sun elevation.
+          default: -3
+          selector:
+            number:
+              min: -18.0
+              max: 6.0
+              step: 1.0
+              unit_of_measurement: "°"
               mode: box
   source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/night_mode_detector.yaml
 
@@ -335,8 +352,7 @@ variables:
   bedtime_pre_roll: !input bedtime_pre_roll
   wake_pre_roll: !input wake_pre_roll
   presence_entities: !input presence_entities
-  bedroom_motion: !input bedroom_motion
-  house_motion: !input house_motion
+  outside_motion: !input outside_motion
   living_area_lights: !input living_area_lights
   bedroom_lights: !input bedroom_lights
   awake_media_players: !input awake_media_players
@@ -346,11 +362,11 @@ variables:
   quiet_minutes: !input quiet_minutes
   weight_charging: !input weight_charging
   weight_bedroom_occupancy: !input weight_bedroom_occupancy
-  weight_bedroom_quiet: !input weight_bedroom_quiet
-  weight_house_quiet: !input weight_house_quiet
+  weight_outside_quiet: !input weight_outside_quiet
   weight_media_off: !input weight_media_off
   weight_lights_off: !input weight_lights_off
   weight_bedroom_lights_off: !input weight_bedroom_lights_off
+  sun_elevation_threshold: !input sun_elevation_threshold
 
   # Raw optional single-entity inputs ([] when unset)
   sleep_tod_free_raw: !input sleep_tod_free
@@ -358,11 +374,13 @@ variables:
   workday_tomorrow_raw: !input workday_tomorrow_sensor
   bedroom_occupancy_raw: !input bedroom_occupancy_sensor
 
-  # Normalize to a clean entity_id string or none (avoids [] / {} pitfalls)
+  # Normalize to a clean entity_id string or none
   sleep_tod_free: "{{ sleep_tod_free_raw if sleep_tod_free_raw is string and sleep_tod_free_raw else none }}"
   workday_today_sensor: "{{ workday_today_raw if workday_today_raw is string and workday_today_raw else none }}"
   workday_tomorrow_sensor: "{{ workday_tomorrow_raw if workday_tomorrow_raw is string and workday_tomorrow_raw else none }}"
   bedroom_occupancy_sensor: "{{ bedroom_occupancy_raw if bedroom_occupancy_raw is string and bedroom_occupancy_raw else none }}"
+
+  sun_dark: "{{ state_attr('sun.sun', 'elevation') | float(0) < sun_elevation_threshold | float(-3) }}"
 
   is_free_day: >-
     {% set wd = workday_tomorrow_sensor if now().hour >= 12 else workday_today_sensor %}
@@ -370,9 +388,15 @@ variables:
 
   active_tod: "{{ sleep_tod_free if (is_free_day and sleep_tod_free is not none) else sleep_tod }}"
 
+  all_phones_charging: >-
+    {{ presence_charging_sensors | length > 0
+       and expand(presence_charging_sensors) | selectattr('state', 'equalto', 'on') | list | count == presence_charging_sensors | length }}
+
   someone_home: >-
     {{ presence_entities | length == 0
        or expand(presence_entities) | selectattr('state', 'in', ['home', 'on']) | list | count > 0 }}
+
+  present: "{{ someone_home or all_phones_charging }}"
 
   approaching_bedtime: >-
     {% set ev = state_attr(active_tod, 'after') | as_timestamp(0) %}
@@ -388,35 +412,34 @@ variables:
 
   bed_score: >-
     {% set ns = namespace(score=0) %}
-    {% if presence_charging_sensors | length > 0
-       and expand(presence_charging_sensors) | selectattr('state', 'equalto', 'on') | list | count == presence_charging_sensors | length %}
+    {# Direct bed signals — always counted #}
+    {% if all_phones_charging %}
       {% set ns.score = ns.score + weight_charging | int(0) %}
     {% endif %}
     {% if bedroom_occupancy_sensor is not none
        and states(bedroom_occupancy_sensor) | float(0) > bedroom_occupancy_threshold | float(0) %}
       {% set ns.score = ns.score + weight_bedroom_occupancy | int(0) %}
     {% endif %}
-    {% if bedroom_motion | length > 0
-       and expand(bedroom_motion) | selectattr('state', 'equalto', 'on') | list | count == 0
-       and (now() - (expand(bedroom_motion) | map(attribute='last_changed') | max)).total_seconds() >= quiet_minutes | float(0) * 60 %}
-      {% set ns.score = ns.score + weight_bedroom_quiet | int(0) %}
-    {% endif %}
-    {% if house_motion | length > 0
-       and expand(house_motion) | selectattr('state', 'equalto', 'on') | list | count == 0
-       and (now() - (expand(house_motion) | map(attribute='last_changed') | max)).total_seconds() >= quiet_minutes | float(0) * 60 %}
-      {% set ns.score = ns.score + weight_house_quiet | int(0) %}
-    {% endif %}
-    {% if awake_media_players | length > 0
-       and expand(awake_media_players) | selectattr('state', 'in', ['playing', 'on']) | list | count == 0 %}
-      {% set ns.score = ns.score + weight_media_off | int(0) %}
-    {% endif %}
-    {% if living_area_lights | length > 0
-       and expand(living_area_lights) | selectattr('state', 'equalto', 'on') | list | count == 0 %}
-      {% set ns.score = ns.score + weight_lights_off | int(0) %}
-    {% endif %}
-    {% if bedroom_lights | length > 0
-       and expand(bedroom_lights) | selectattr('state', 'equalto', 'on') | list | count == 0 %}
-      {% set ns.score = ns.score + weight_bedroom_lights_off | int(0) %}
+    {# Wind-down signals — only counted while someone is present #}
+    {% if present %}
+      {% if outside_motion | length > 0
+         and expand(outside_motion) | selectattr('state', 'equalto', 'on') | list | count == 0
+         and (now() - (expand(outside_motion) | map(attribute='last_changed') | max)).total_seconds() >= quiet_minutes | float(0) * 60 %}
+        {% set ns.score = ns.score + weight_outside_quiet | int(0) %}
+      {% endif %}
+      {% if awake_media_players | length > 0
+         and expand(awake_media_players) | selectattr('state', 'in', ['playing', 'on']) | list | count == 0 %}
+        {% set ns.score = ns.score + weight_media_off | int(0) %}
+      {% endif %}
+      {% if sun_dark
+         and living_area_lights | length > 0
+         and expand(living_area_lights) | selectattr('state', 'equalto', 'on') | list | count == 0 %}
+        {% set ns.score = ns.score + weight_lights_off | int(0) %}
+      {% endif %}
+      {% if bedroom_lights | length > 0
+         and expand(bedroom_lights) | selectattr('state', 'equalto', 'on') | list | count == 0 %}
+        {% set ns.score = ns.score + weight_bedroom_lights_off | int(0) %}
+      {% endif %}
     {% endif %}
     {{ ns.score }}
 
@@ -444,29 +467,19 @@ trigger:
   entity_id: !input bedroom_occupancy_sensor
 - id: bed_signal
   platform: state
-  entity_id: !input bedroom_motion
+  entity_id: !input outside_motion
 - id: bed_signal
   platform: state
-  entity_id: !input house_motion
+  entity_id: !input presence_entities
 - id: quiet_reached
   platform: state
-  entity_id: !input bedroom_motion
-  to: 'off'
-  for:
-    minutes: !input quiet_minutes
-- id: quiet_reached
-  platform: state
-  entity_id: !input house_motion
+  entity_id: !input outside_motion
   to: 'off'
   for:
     minutes: !input quiet_minutes
 - id: wake_signal
   platform: state
-  entity_id: !input bedroom_motion
-  to: 'on'
-- id: wake_signal
-  platform: state
-  entity_id: !input house_motion
+  entity_id: !input outside_motion
   to: 'on'
 - id: wake_signal
   platform: state
@@ -509,7 +522,7 @@ action:
       service: input_boolean.turn_off
       target:
         entity_id: !input night_mode_helper
-  - alias: Soft night on — score reached within window and someone home
+  - alias: Soft night on — score reached within window and someone present
     conditions:
     - condition: template
       value_template: "{{ trigger.id in ['bed_signal', 'quiet_reached', 'tick'] }}"
@@ -518,7 +531,7 @@ action:
     - condition: template
       value_template: "{{ in_night_window }}"
     - condition: template
-      value_template: "{{ someone_home }}"
+      value_template: "{{ present }}"
     - condition: template
       value_template: "{{ bed_score | int(0) >= night_score_threshold | int(0) }}"
     sequence:

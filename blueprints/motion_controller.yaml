@@ -211,9 +211,7 @@ action:
         sequence: []
       - conditions:
           - condition: template
-            value_template:
-              "{{ trigger.id in ['unblocked', 'light_becomes_dark', 'night_mode_changed']\n
-              \  and not has_motion }}\n"
+            value_template: "{{ trigger.id == 'unblocked' and not has_motion }}"
         sequence: !input off_action
       - conditions:
           - condition: template
