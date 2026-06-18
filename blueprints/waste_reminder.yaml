@@ -1,0 +1,99 @@
+blueprint:
+  name: Waste Reminder
+  description: >
+    Sends a daily reminder notification when the next waste collection
+    is today or tomorrow.
+
+    At the configured time the automation reads the days remaining until
+    pickup and the waste types from two sensors. If pickup is within one day,
+    it routes a formatted notification via the Notify Dispatcher script.
+
+    Waste types are parsed from either a JSON array string (['Type1', 'Type2'])
+    or a comma-separated string (Type1, Type2). The message uses singular or
+    plural phrasing depending on the number of types.
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script (reminderAll type)
+    – broadcasts to all configured persons regardless of presence.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    reminder_time:
+      name: Reminder Time
+      description: Daily time at which the check is performed.
+      default: "18:00:00"
+      selector:
+        time: {}
+    pickup_days_sensor:
+      name: Days Until Pickup Sensor
+      description: >
+        Sensor whose state is the number of days until the next waste
+        collection (0 = today, 1 = tomorrow). The reminder fires when
+        this value is 0 or 1.
+      selector:
+        entity:
+          domain: sensor
+    waste_types_sensor:
+      name: Waste Types Sensor
+      description: >
+        Sensor whose state lists the waste types to be collected.
+        Accepts a JSON array string (['Type1', 'Type2']) or a
+        comma-separated string (Type1, Type2).
+      selector:
+        entity:
+          domain: sensor
+    notify_dispatcher:
+      name: Notify Dispatcher Script
+      description: The Notify Dispatcher script instance used for routing.
+      selector:
+        entity:
+          domain: script
+          multiple: false
+
+variables:
+  pickup_days_sensor: !input pickup_days_sensor
+  waste_types_sensor: !input waste_types_sensor
+
+trigger:
+  - platform: time
+    at: !input reminder_time
+
+condition:
+  - alias: Pickup today or tomorrow
+    condition: template
+    value_template: >
+      {% set days = states(pickup_days_sensor) | int(-1) %}
+      {{ days >= 0 and days <= 1 }}
+
+action:
+  - variables:
+      notification_message: >
+        {% set s = states(waste_types_sensor) | trim %}
+        {% if s.startswith('[') %}
+          {% set types = s | replace("'", '"') | from_json %}
+        {% else %}
+          {% set types = s.split(',') | map('trim') | list %}
+        {% endif %}
+        {% set days = states(pickup_days_sensor) | int %}
+        {% set when = 'heute' if days == 0 else 'morgen' %}
+        {% if types | length <= 1 %}
+          {% set waste = types[0] if types | length == 1 else 'Müll' %}
+          {{ waste }} wird {{ when }} abgeholt.
+        {% else %}
+          {% set waste = types[:-1] | join(', ') + ' und ' + types[-1] %}
+          {{ waste }} werden {{ when }} abgeholt.
+        {% endif %}
+
+  - alias: Send notification via Notify Dispatcher
+    action: script.turn_on
+    target:
+      entity_id: !input notify_dispatcher
+    data:
+      variables:
+        notify_type: reminderAll
+        title: Müllabfuhr
+        message: "{{ notification_message }}"
+
+mode: single
+max_exceeded: silent
