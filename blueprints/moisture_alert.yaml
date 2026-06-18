@@ -1,0 +1,131 @@
+blueprint:
+  name: Moisture Alert
+  description: >
+    Monitors a soil moisture sensor and sends a presence-aware notification
+    when moisture drops below a configurable threshold. Repeats the alert
+    after a configurable interval as long as the problem persists.
+
+    The last alert timestamp is persisted in an input_datetime helper so
+    the interval survives HA restarts.
+
+    REQUIRES: One input_datetime helper (date + time) per plant instance,
+    e.g. input_datetime.last_moisture_alert_monstera. Create it once in
+    Settings → Helpers.
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script (reminderHomeOrAll
+    type) – notifies persons currently home, falls back to all if nobody home.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    moisture_sensor:
+      name: Moisture Sensor
+      description: Soil moisture sensor reporting 0–100 %.
+      selector:
+        entity:
+          domain: sensor
+          device_class: moisture
+          multiple: false
+    plant_name:
+      name: Plant Name
+      description: Inserted into the notification message, e.g. "Monstera".
+      selector:
+        text: {}
+    alert_threshold:
+      name: Alert Threshold (%)
+      description: Send a notification when moisture drops below this value.
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+    alert_interval:
+      name: Alert Interval (hours)
+      description: Minimum time between repeated notifications while moisture stays low.
+      default: 24
+      selector:
+        number:
+          min: 1
+          max: 168
+          unit_of_measurement: h
+          mode: box
+    debounce_seconds:
+      name: Debounce (seconds)
+      description: >
+        The moisture sensor must stay below the threshold for this many seconds
+        before the notification is sent. Avoids spurious alerts from brief dips.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: s
+          mode: box
+    last_alert_helper:
+      name: Last Alert Helper
+      description: >
+        input_datetime helper that stores when the last notification was sent.
+        The automation updates this automatically after each alert.
+      selector:
+        entity:
+          domain: input_datetime
+          multiple: false
+    notify_dispatcher:
+      name: Notify Dispatcher Script
+      description: The Notify Dispatcher script instance used for presence-aware routing.
+      selector:
+        entity:
+          domain: script
+          multiple: false
+
+variables:
+  moisture_sensor: !input moisture_sensor
+  alert_threshold: !input alert_threshold
+  alert_interval: !input alert_interval
+  last_alert_helper: !input last_alert_helper
+  plant_name: !input plant_name
+
+trigger:
+  - platform: state
+    entity_id: !input moisture_sensor
+    for:
+      seconds: !input debounce_seconds
+
+condition:
+  - alias: Moisture below threshold
+    condition: template
+    value_template: "{{ states(moisture_sensor) | float(-1) >= 0 and states(moisture_sensor) | float < alert_threshold }}"
+
+  - alias: Alert interval elapsed
+    condition: template
+    value_template: >
+      {% set last = states(last_alert_helper) %}
+      {% if last in ['unknown', 'unavailable'] %}
+        true
+      {% else %}
+        {{ (now().timestamp() - as_timestamp(last)) > alert_interval * 3600 }}
+      {% endif %}
+
+action:
+  - alias: Send presence-aware notification
+    action: script.turn_on
+    target:
+      entity_id: !input notify_dispatcher
+    data:
+      variables:
+        notify_type: reminderHomeOrAll
+        title: Feuchtigkeitsalarm
+        message: "{{ plant_name }} braucht Wasser!"
+
+  - alias: Persist last alert timestamp
+    action: input_datetime.set_datetime
+    target:
+      entity_id: !input last_alert_helper
+    data:
+      datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+mode: single
+max_exceeded: silent
