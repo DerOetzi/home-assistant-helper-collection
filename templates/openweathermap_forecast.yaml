@@ -1,0 +1,34 @@
+- trigger:
+    - platform: time_pattern
+      minutes: /15
+    - platform: homeassistant
+      event: start
+    - platform: event
+      event_type: event_template_reloaded
+  action:
+    - service: weather.get_forecasts
+      target:
+        entity_id: weather.openweathermap
+      data:
+        type: daily
+      response_variable: forecast_result
+    - variables:
+        forecast_today: "{{ forecast_result['weather.openweathermap'].forecast[0] }}"
+  sensor:
+    - name: Openweathermap Höchsttemperatur
+      unique_id: openweathermap_forecast_temperature
+      state: "{{ forecast_today.temperature }}"
+      attributes:
+        timestamp: "{{ forecast_today.datetime }}"
+      icon: mdi:thermometer
+      unit_of_measurement: "°C"
+      device_class: temperature
+
+    - name: Openweathermap Niedrigste Temperatur Heute
+      unique_id: openweathermap_forecast_temperature_low
+      state: "{{ forecast_today.templow }}"
+      attributes:
+        timestamp: "{{ forecast_today.datetime }}"
+      icon: mdi:thermometer
+      unit_of_measurement: "°C"
+      device_class: temperature

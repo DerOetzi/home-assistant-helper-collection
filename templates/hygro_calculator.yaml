@@ -1,0 +1,60 @@
+# Hygrometrischer Rechner
+# Berechnet absolute Feuchte (g/m³) und Taupunkt (°C) aus
+# Temperatur und relativer Feuchte mittels Magnus-Näherung.
+#
+# Magnus-Konstanten (WMO):
+#   Über Wasser (T ≥ 0 °C): α = 7.5,  β = 237.3
+#   Über Eis    (T < 0 °C): α = 7.6,  β = 240.7
+#   Basisfaktor: a = 6.1078 hPa
+#
+# Pro Raum anpassen (← markiert):
+#   trigger.entity_id  – Temperatur- und Feuchte-Sensor (2 Zeilen)
+#   action.variables   – dieselben Entity-IDs als Strings (2 Zeilen)
+#   sensor.name        – Anzeigename pro Sensor-Paar (2 Zeilen)
+#   sensor.unique_id   – eindeutige ID pro Sensor-Paar (2 Zeilen)
+
+- trigger:
+    - trigger: state
+      entity_id:
+        - sensor.TEMPERATUR    # ← anpassen
+        - sensor.LUFTFEUCHTE   # ← anpassen
+  action:
+    - variables:
+        temp_entity: "sensor.TEMPERATUR"     # ← anpassen
+        humi_entity: "sensor.LUFTFEUCHTE"    # ← anpassen
+    - variables:
+        T: "{{ states(temp_entity) | float }}"
+        rH: "{{ states(humi_entity) | float }}"
+        available: >-
+          {{ states(temp_entity) | is_number
+             and states(humi_entity) | is_number }}
+  sensor:
+    - name: Absolute Feuchte          # ← anpassen
+      unique_id: hygro_ah             # ← anpassen
+      unit_of_measurement: "g/m³"
+      state_class: measurement
+      icon: mdi:water-percent
+      availability: "{{ available }}"
+      state: >-
+        {%- set a   = 6.1078 -%}
+        {%- set alp = 7.5 if T >= 0 else 7.6 -%}
+        {%- set bet = 237.3 if T >= 0 else 240.7 -%}
+        {%- set svp = a * (10 ** (alp * T / (bet + T))) -%}
+        {%- set vp  = (rH / 100) * svp -%}
+        {{ (216.7 * vp / (T + 273.15)) | round(1) }}
+
+    - name: Taupunkt                  # ← anpassen
+      unique_id: hygro_dp             # ← anpassen
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      icon: mdi:thermometer-water
+      availability: "{{ available }}"
+      state: >-
+        {%- set a   = 6.1078 -%}
+        {%- set svp = a * (10 ** ((7.5 if T >= 0 else 7.6) * T
+                            / ((237.3 if T >= 0 else 240.7) + T))) -%}
+        {%- set vp  = [((rH / 100) * svp), 1e-12] | max -%}
+        {%- set v   = log(vp / a, 10) -%}
+        {%- set td  = (237.3 * v) / (7.5 - v) -%}
+        {{ (td if td >= 0 else (240.7 * v) / (7.6 - v)) | round(1) }}

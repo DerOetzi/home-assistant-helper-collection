@@ -94,6 +94,7 @@ action:
         notify_type: reminderAll
         title: Müllabfuhr
         message: "{{ notification_message }}"
+        reminder_count: 0
 
 mode: single
 max_exceeded: silent

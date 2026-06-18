@@ -119,6 +119,7 @@ action:
         notify_type: reminderHomeOrAll
         title: Feuchtigkeitsalarm
         message: "{{ plant_name }} braucht Wasser!"
+        reminder_count: 0
 
   - alias: Persist last alert timestamp
     action: input_datetime.set_datetime
