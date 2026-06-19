@@ -1,0 +1,70 @@
+blueprint:
+  name: Birthday Reminder
+  description: >
+    Sends a daily notification for all today's birthdays detected by the
+    Anniversary integration (sensor.anniversary_* entities with state 0).
+
+    Each entry lists the person's name and age (if the years_at_anniversary
+    attribute is available). If no birthday falls on today's date the
+    automation does nothing.
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script (reminderAll type)
+    – broadcasts to all configured persons regardless of presence.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    reminder_time:
+      name: Reminder Time
+      description: Daily time at which the birthday check is performed.
+      default: "08:00:00"
+      selector:
+        time: {}
+    notify_dispatcher:
+      name: Notify Dispatcher Script
+      description: The Notify Dispatcher script instance used for routing.
+      selector:
+        entity:
+          domain: script
+          multiple: false
+
+variables:
+  notification_message: >
+    {% set ns = namespace(parts=[]) %}
+    {% for s in states.sensor %}
+      {% if s.entity_id.startswith('sensor.anniversary_') and s.state == '0' %}
+        {% set name = s.attributes.get('friendly_name', s.name) %}
+        {% set age = s.attributes.get('years_at_anniversary') %}
+        {% if age %}
+          {% set ns.parts = ns.parts + [name ~ ' (' ~ age ~ ')'] %}
+        {% else %}
+          {% set ns.parts = ns.parts + [name] %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.parts | join(', ') }}
+
+trigger:
+  - platform: time
+    at: !input reminder_time
+
+condition:
+  - alias: At least one birthday today
+    condition: template
+    value_template: "{{ notification_message | trim | length > 0 }}"
+
+action:
+  - alias: Send birthday notification via Notify Dispatcher
+    action: script.turn_on
+    target:
+      entity_id: !input notify_dispatcher
+    data:
+      variables:
+        notify_type: reminderAll
+        title: Geburtstage
+        message: "{{ notification_message | trim }}"
+        reminder_count: 0
+
+mode: single
+max_exceeded: silent
