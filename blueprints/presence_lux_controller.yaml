@@ -28,11 +28,13 @@ blueprint:
           multiple: true
           reorder: false
     lux_sensor:
-      name: Lux Sensor
+      name: Lux Sensor (optional)
       description: >
         Illuminance sensor (e.g. from an outdoor motion detector). The turn-on
         action is only triggered when the measured value is below the darkness
-        threshold.
+        threshold. Leave empty to skip the lux check (presence + schedule alone
+        control the light).
+      default: {}
       selector:
         entity:
           domain: sensor
@@ -40,7 +42,9 @@ blueprint:
           multiple: false
     lux_threshold:
       name: Darkness Threshold
-      description: Sensor value below which it is considered dark enough to turn on.
+      description: >
+        Sensor value below which it is considered dark enough to turn on.
+        Only used when a lux sensor is configured.
       default: 10
       selector:
         number:
@@ -97,7 +101,9 @@ variables:
   schedule_helper: !input schedule_helper
   night_mode_sensor: !input night_mode_sensor
 
-  is_dark: "{{ states(lux_sensor) | float(0) < lux_threshold | float(10) }}"
+  is_dark: >-
+    {{ lux_sensor == {}
+       or states(lux_sensor) | float(0) < lux_threshold | float(10) }}
 
   someone_home: >-
     {{ expand(presence_entities)
