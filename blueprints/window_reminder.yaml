@@ -1,0 +1,231 @@
+blueprint:
+  name: Window Reminder
+  description: >
+    Monitors one or more window or door sensors and sends presence-aware notifications.
+
+    Alarm: When a window opens while nobody is home, an immediate alert is broadcast
+    to all persons.
+
+    Leaving: When everyone leaves home with a window still open, an immediate alert is
+    broadcast to all persons.
+
+    Reminder: While a window is open and someone is home, a repeating reminder is sent
+    at the configured interval (reminderHomeOrAll type – notifies persons currently home,
+    falls back to all if nobody is home).
+
+    Two reminder intervals can be configured: one for when the heating is active and a
+    longer one for when the heating is off. The heating entity is optional – when omitted
+    the default interval is always used.
+
+    No helper entities required. The interval timer runs inside the automation and
+    resets automatically when the heating state or presence changes (mode: restart).
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script (alert type for alarm and
+    leaving, reminderHomeOrAll type for periodic reminders).
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    window_sensors:
+      name: Window / Door Sensors
+      description: >
+        One or more window or door binary sensors. The window is considered open
+        when at least one sensor reports "on" (OR logic).
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class:
+            - window
+            - door
+          multiple: true
+    presence_entities:
+      name: Presence Entities
+      description: >
+        One or more person / device_tracker / binary_sensor / input_boolean
+        entities. At least one must be "home" or "on" for the automation to
+        consider someone home (OR logic).
+      selector:
+        entity:
+          multiple: true
+          reorder: false
+    window_name:
+      name: Window / Room Name
+      description: >
+        Inserted into notification messages, e.g. "Wohnzimmer" or "Küche".
+      selector:
+        text: {}
+    heating_entity:
+      name: Heating Entity (optional)
+      description: >
+        binary_sensor, switch, input_boolean, or climate entity that indicates
+        whether the heating is active. When provided, the reminder interval
+        switches between the two values below depending on heating state.
+        Leave empty to always use the default interval.
+      default: {}
+      selector:
+        entity:
+          domain:
+            - binary_sensor
+            - switch
+            - input_boolean
+            - climate
+          multiple: false
+    reminder_interval_heating:
+      name: Reminder Interval – Heating On (minutes)
+      description: >
+        Reminder interval used while the heating is active. Should be shorter
+        than the default interval. Set to 0 to disable reminders when heating
+        is on (not recommended).
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 1440
+          step: 5
+          unit_of_measurement: min
+          mode: box
+    reminder_interval_default:
+      name: Reminder Interval – Heating Off (minutes)
+      description: >
+        Reminder interval used when no heating entity is configured or the
+        heating is off. Set to 0 to disable reminders in this case.
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 1440
+          step: 5
+          unit_of_measurement: min
+          mode: box
+    notify_dispatcher:
+      name: Notify Dispatcher Script
+      description: The Notify Dispatcher script instance used for routing.
+      selector:
+        entity:
+          domain: script
+          multiple: false
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/window_reminder.yaml
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  window_sensors: !input window_sensors
+  presence_entities: !input presence_entities
+  heating_entity: !input heating_entity
+  reminder_interval_heating: !input reminder_interval_heating
+  reminder_interval_default: !input reminder_interval_default
+  window_name: !input window_name
+
+  is_window_open: >
+    {{ expand(window_sensors)
+       | selectattr('state', '==', 'on')
+       | list | count > 0 }}
+
+  is_home: >
+    {{ expand(presence_entities)
+       | selectattr('state', 'in', ['home', 'on'])
+       | list | count > 0 }}
+
+  is_heating_on: >
+    {{ heating_entity != {}
+       and is_state(heating_entity, ['on', 'heat', 'heat_cool', 'auto']) }}
+
+  active_interval: >
+    {{ reminder_interval_heating if is_heating_on else reminder_interval_default }}
+
+trigger:
+  - id: window_changed
+    platform: state
+    entity_id: !input window_sensors
+  - id: presence_changed
+    platform: state
+    entity_id: !input presence_entities
+  - id: heating_changed
+    platform: state
+    entity_id: !input heating_entity
+  - id: ha_start
+    platform: homeassistant
+    event: start
+
+action:
+  - alias: Send immediate notifications on relevant state changes
+    choose:
+      - alias: Alarm – window opened while nobody is home
+        conditions:
+          - "{{ trigger.id == 'window_changed' and is_window_open and not is_home }}"
+        sequence:
+          - action: script.turn_on
+            target:
+              entity_id: !input notify_dispatcher
+            data:
+              variables:
+                notify_type: alert
+                title: Fenster offen
+                message: "{{ window_name }} ist geöffnet und niemand ist zu Hause!"
+                reminder_count: 0
+
+      - alias: Leaving – everyone left home with window still open
+        conditions:
+          - "{{ trigger.id == 'presence_changed' and not is_home and is_window_open }}"
+        sequence:
+          - action: script.turn_on
+            target:
+              entity_id: !input notify_dispatcher
+            data:
+              variables:
+                notify_type: alert
+                title: Fenster offen
+                message: "Das Haus wurde verlassen und {{ window_name }} ist noch geöffnet!"
+                reminder_count: 0
+
+  - alias: Only continue when window is open, someone is home, and interval > 0
+    condition: template
+    value_template: "{{ is_window_open and is_home and active_interval | int(0) > 0 }}"
+
+  - alias: Repeat reminders until window closes or nobody is home
+    repeat:
+      while:
+        - >
+          {{ expand(window_sensors)
+             | selectattr('state', '==', 'on')
+             | list | count > 0 }}
+        - >
+          {{ expand(presence_entities)
+             | selectattr('state', 'in', ['home', 'on'])
+             | list | count > 0 }}
+      sequence:
+        - alias: Wait for window to close, presence to leave, or interval to elapse
+          wait_for_trigger:
+            - alias: Window closed
+              platform: template
+              value_template: >
+                {{ expand(window_sensors)
+                   | selectattr('state', '==', 'on')
+                   | list | count == 0 }}
+            - alias: Nobody home
+              platform: template
+              value_template: >
+                {{ expand(presence_entities)
+                   | selectattr('state', 'in', ['home', 'on'])
+                   | list | count == 0 }}
+          timeout:
+            minutes: "{{ active_interval }}"
+        - alias: Stop loop if window closed or nobody home (wait exited via trigger)
+          if:
+            - "{{ wait.trigger is not none }}"
+          then:
+            - stop: "Window closed or nobody home"
+        - alias: Interval elapsed – send reminder
+          action: script.turn_on
+          target:
+            entity_id: !input notify_dispatcher
+          data:
+            variables:
+              notify_type: reminderHomeOrAll
+              title: Fenster offen
+              message: >
+                {{ window_name }} ist noch geöffnet
+                {%- if is_heating_on %} und die Heizung läuft!{% else %}.{% endif %}
+              reminder_count: 0
