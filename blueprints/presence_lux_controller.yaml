@@ -1,0 +1,120 @@
+blueprint:
+  name: Presence & Lux Light Controller
+  description: >
+    Controls lights based on presence and ambient light level. Turns on when
+    someone is home, lux is below the configured darkness threshold, and —
+    when a schedule helper is configured — within the active schedule window.
+    Turns off as soon as any condition is no longer met.
+
+    Schedule helper is optional: when omitted the automation runs at any time
+    of day as long as presence and lux conditions are satisfied.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    presence_entities:
+      name: Presence Entities
+      description: >
+        One or more person / device_tracker / binary_sensor / input_boolean
+        entities. At least one must be 'home' or 'on' for the light to turn
+        on (OR logic).
+      selector:
+        entity:
+          multiple: true
+          reorder: false
+    lux_sensor:
+      name: Lux Sensor
+      description: >
+        Illuminance sensor (e.g. from an outdoor motion detector). The turn-on
+        action is only triggered when the measured value is below the darkness
+        threshold.
+      selector:
+        entity:
+          domain: sensor
+          device_class: illuminance
+          multiple: false
+    lux_threshold:
+      name: Darkness Threshold
+      description: Sensor value below which it is considered dark enough to turn on.
+      default: 10
+      selector:
+        number:
+          min: 0.0
+          max: 10000.0
+          step: 1.0
+          unit_of_measurement: lx
+          mode: box
+    schedule_helper:
+      name: Schedule Helper (optional)
+      description: >
+        input_boolean or schedule entity that restricts when the automation
+        may turn lights on. The turn-on action is only executed while this
+        entity is 'on'. Leave empty to allow turn-on at any time of day.
+      default: {}
+      selector:
+        entity:
+          domain:
+            - input_boolean
+            - schedule
+          multiple: false
+    on_action:
+      name: Turn-On Action
+      description: Actions to execute when all conditions are met.
+      selector:
+        action: {}
+    off_action:
+      name: Turn-Off Action
+      description: Actions to execute when at least one condition is no longer met.
+      selector:
+        action: {}
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/presence_lux_controller.yaml
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  presence_entities: !input presence_entities
+  lux_sensor: !input lux_sensor
+  lux_threshold: !input lux_threshold
+  schedule_helper: !input schedule_helper
+
+  is_dark: "{{ states(lux_sensor) | float(0) < lux_threshold | float(10) }}"
+
+  someone_home: >-
+    {{ expand(presence_entities)
+       | selectattr('state', 'in', ['home', 'on'])
+       | list | count > 0 }}
+
+  schedule_active: >-
+    {{ schedule_helper == {} or is_state(schedule_helper, 'on') }}
+
+  should_be_on: "{{ is_dark and someone_home and schedule_active }}"
+
+trigger:
+  - id: lux_dropped
+    platform: numeric_state
+    entity_id: !input lux_sensor
+    below: !input lux_threshold
+  - id: lux_rose
+    platform: numeric_state
+    entity_id: !input lux_sensor
+    above: !input lux_threshold
+  - id: presence_changed
+    platform: state
+    entity_id: !input presence_entities
+  - id: schedule_changed
+    platform: state
+    entity_id: !input schedule_helper
+  - id: ha_start
+    platform: homeassistant
+    event: start
+
+action:
+  - alias: Turn on or off based on current conditions
+    choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ should_be_on }}"
+        sequence: !input on_action
+    default: !input off_action
