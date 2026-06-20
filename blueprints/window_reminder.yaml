@@ -266,4 +266,4 @@ action:
               extra_data:
                 actions:
                   - action: !input cancel_action_id
-                    title: Abbrechen
+                    title: Erinnerungen stoppen
