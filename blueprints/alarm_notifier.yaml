@@ -1,0 +1,169 @@
+blueprint:
+  name: Alarm Notifier
+  description: >
+    Monitors one or more alarm binary sensors (water leak, smoke detector,
+    carbon monoxide, gas, etc.) and sends a repeating alert notification until
+    the alarm clears or the user acknowledges it.
+
+    Alert: An immediate notification is sent to all persons when any sensor
+    triggers ("on"). The notification repeats at the configured interval as
+    long as the sensor remains active.
+
+    Acknowledge: Tapping the "Alarm quittieren" action in the push notification
+    stops further repeats for the current event. Notifications resume
+    automatically if the sensor triggers again after having cleared.
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script (alert type –
+    always broadcasts to all persons regardless of presence).
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    alarm_sensors:
+      name: Alarm Sensors
+      description: >
+        One or more binary sensors to monitor. The alarm is considered active
+        when at least one sensor reports "on" (OR logic). Suitable for water
+        leak, smoke, carbon monoxide, gas, and similar safety sensors.
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+    alarm_title:
+      name: Notification Title
+      description: >
+        Title shown in the push notification, e.g. "Wasserleck entdeckt" or
+        "Rauchmelder ausgelöst".
+      selector:
+        text: {}
+    alarm_message:
+      name: Notification Message
+      description: >
+        Message body shown in the push notification, e.g. "Lecksensor Küche
+        hat ausgelöst".
+      selector:
+        text: {}
+    repeat_interval:
+      name: Repeat Interval (minutes)
+      description: >
+        How often the alert is repeated while the sensor remains active.
+        Set to 0 to disable repeat notifications (single alert only – not
+        recommended for safety-critical alarms).
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    cancel_action_id:
+      name: Acknowledge Action ID
+      description: >
+        Unique identifier for the "Alarm quittieren" action button in push
+        notifications. Must be unique per blueprint instance when multiple
+        alarm automations are active (e.g. ALARM_CANCEL_WASSERLECK,
+        ALARM_CANCEL_RAUCH).
+
+        The acknowledge can also be triggered from a dashboard button or
+        developer tools by firing event_type: mobile_app_notification_action
+        with event_data.action set to this value.
+
+        Notifications resume automatically when the sensor triggers again after
+        having first cleared.
+      default: ALARM_CANCEL
+      selector:
+        text: {}
+    notify_dispatcher:
+      name: Notify Dispatcher Script
+      description: The Notify Dispatcher script instance used for routing.
+      selector:
+        entity:
+          domain: script
+          multiple: false
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/alarm_notifier.yaml
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  alarm_sensors: !input alarm_sensors
+  repeat_interval: !input repeat_interval
+
+trigger:
+  - id: sensor_triggered
+    platform: state
+    entity_id: !input alarm_sensors
+    to: "on"
+  - id: cancelled
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: !input cancel_action_id
+  - id: ha_start
+    platform: homeassistant
+    event: start
+
+action:
+  - alias: Stop if acknowledged by user
+    if: "{{ trigger.id == 'cancelled' }}"
+    then:
+      - stop: "Alarm acknowledged by user"
+
+  - alias: Check if alarm is still active
+    condition: template
+    value_template: >
+      {{ expand(alarm_sensors)
+         | selectattr('state', '==', 'on')
+         | list | count > 0 }}
+
+  - alias: Send alert and repeat until alarm clears or is acknowledged
+    repeat:
+      while:
+        - >
+          {{ expand(alarm_sensors)
+             | selectattr('state', '==', 'on')
+             | list | count > 0 }}
+      sequence:
+        - alias: Send alert to all persons
+          action: script.turn_on
+          target:
+            entity_id: !input notify_dispatcher
+          data:
+            variables:
+              notify_type: alert
+              title: !input alarm_title
+              message: !input alarm_message
+              reminder_count: "{{ repeat.index - 1 }}"
+              extra_data:
+                actions:
+                  - action: !input cancel_action_id
+                    title: Alarm quittieren
+
+        - alias: Stop if repeat is disabled
+          if: "{{ repeat_interval | int(0) == 0 }}"
+          then:
+            - stop: "Single alert sent, repeat disabled"
+
+        - alias: Wait for alarm to clear, acknowledge, or interval to elapse
+          wait_for_trigger:
+            - alias: Alarm cleared
+              platform: template
+              value_template: >
+                {{ expand(alarm_sensors)
+                   | selectattr('state', '==', 'on')
+                   | list | count == 0 }}
+            - alias: Acknowledged via mobile action
+              platform: event
+              event_type: mobile_app_notification_action
+              event_data:
+                action: !input cancel_action_id
+          timeout:
+            minutes: "{{ repeat_interval }}"
+
+        - alias: Stop loop if alarm cleared or acknowledged
+          if: "{{ wait.trigger is not none }}"
+          then:
+            - stop: "Alarm cleared or acknowledged"
