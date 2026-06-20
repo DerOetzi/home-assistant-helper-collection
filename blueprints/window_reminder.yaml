@@ -11,7 +11,8 @@ blueprint:
 
     Reminder: While a window is open and someone is home, a repeating reminder is sent
     at the configured interval (reminderHomeOrAll type – notifies persons currently home,
-    falls back to all if nobody is home).
+    falls back to all if nobody is home). Each reminder includes an "Abbrechen" action
+    button that stops the loop when tapped.
 
     Two reminder intervals can be configured: one for when the heating is active and a
     longer one for when the heating is off. The heating entity is optional – when omitted
@@ -19,6 +20,10 @@ blueprint:
 
     No helper entities required. The interval timer runs inside the automation and
     resets automatically when the heating state or presence changes (mode: restart).
+
+    CANCEL: The reminder loop can be stopped by tapping the "Abbrechen" action in the
+    push notification (mobile app) or by firing the mobile_app_notification_action event
+    with the configured action ID from a dashboard button or developer tools.
 
     NOTIFICATION ROUTING: Uses the Notify Dispatcher script (alert type for alarm and
     leaving, reminderHomeOrAll type for periodic reminders).
@@ -98,6 +103,24 @@ blueprint:
           step: 5
           unit_of_measurement: min
           mode: box
+    cancel_action_id:
+      name: Cancel Action ID
+      description: >
+        Unique identifier for the "Abbrechen" action button in reminder
+        notifications. Must be unique per blueprint instance when you have
+        multiple window reminders (e.g. WINDOW_CANCEL_KUECHE,
+        WINDOW_CANCEL_WOHNZIMMER).
+
+        The cancel can be triggered in two ways:
+        1. Tap "Abbrechen" in the push notification on a mobile device.
+        2. Fire the event manually from a dashboard button card or developer
+           tools: event_type: mobile_app_notification_action,
+           event_data.action: <this value>.
+
+        Reminders resume on the next state change (window, presence, or heating).
+      default: WINDOW_REMINDER_CANCEL
+      selector:
+        text: {}
     notify_dispatcher:
       name: Notify Dispatcher Script
       description: The Notify Dispatcher script instance used for routing.
@@ -145,6 +168,11 @@ trigger:
   - id: heating_changed
     platform: state
     entity_id: !input heating_entity
+  - id: cancelled
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: !input cancel_action_id
   - id: ha_start
     platform: homeassistant
     event: start
@@ -152,6 +180,12 @@ trigger:
 action:
   - alias: Send immediate notifications on relevant state changes
     choose:
+      - alias: Cancel – stop reminder loop
+        conditions:
+          - "{{ trigger.id == 'cancelled' }}"
+        sequence:
+          - stop: "Reminders cancelled by user"
+
       - alias: Alarm – window opened while nobody is home
         conditions:
           - "{{ trigger.id == 'window_changed' and is_window_open and not is_home }}"
@@ -217,7 +251,7 @@ action:
             - "{{ wait.trigger is not none }}"
           then:
             - stop: "Window closed or nobody home"
-        - alias: Interval elapsed – send reminder
+        - alias: Interval elapsed – send reminder with cancel action
           action: script.turn_on
           target:
             entity_id: !input notify_dispatcher
@@ -229,3 +263,7 @@ action:
                 {{ window_name }} ist noch geöffnet
                 {%- if is_heating_on %} und die Heizung läuft!{% else %}.{% endif %}
               reminder_count: 0
+              extra_data:
+                actions:
+                  - action: !input cancel_action_id
+                    title: Abbrechen
