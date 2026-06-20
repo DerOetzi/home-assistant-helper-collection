@@ -1,0 +1,501 @@
+blueprint:
+  name: Whitegood Reminder
+  description: >
+    Monitors a power sensor to detect when a washing machine, dryer, or
+    dishwasher finishes a cycle and sends presence-aware notifications.
+
+    Finished: When power drops below the off threshold (after having been above
+    the standby threshold), an immediate notification is sent to all persons on
+    the first occurrence, then only to persons at home on subsequent reminders
+    (reminderHomeOrFirstAll routing).
+
+    Run Counter: An optional input_number helper tracks the total number of
+    completed cycles. It is incremented automatically after each finished cycle.
+
+    Cleanup: When the run counter reaches or exceeds the Cleanup Interval, a
+    maintenance reminder message is sent instead of the regular "done" message.
+    The counter is not reset automatically – do that manually in HA.
+
+    Empty Reminders: When enabled, repeating reminders are sent at the
+    configured interval after a finished cycle. An optional door / contact
+    sensor stops the loop when opened (machine emptied). Reminders can also be
+    stopped by tapping "Erinnerung beenden" in the push notification.
+
+    Door Sensor: An optional door / contact sensor with two modes selectable
+    per instance. Leerungs-Trigger (default): opening the door stops the empty
+    reminder loop (machine emptied). Benachrichtigung: sends a notification when
+    the door opens while the appliance is actively running, e.g. to open a
+    window after the dishwasher finishes – does not interrupt cycle tracking.
+
+    Status Entity: An optional input_text helper displays the current state
+    (Läuft / Nicht geleert / Aus – optionally with "Reinigung" suffix). Updated
+    automatically at every state transition. Create one per appliance instance
+    and add it to your dashboard.
+
+    CANCEL: The reminder loop can be stopped by tapping "Erinnerung beenden" in
+    the push notification (mobile app) or by firing the
+    mobile_app_notification_action event with the configured action ID from a
+    dashboard button or developer tools.
+
+    Reminders resume automatically after the next completed cycle.
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script
+    (reminderHomeOrFirstAll type – broadcasts on first occurrence, then notifies
+    only persons currently home, falling back to broadcast if nobody is home).
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    appliance_name:
+      name: Appliance Name
+      description: >
+        Name used in notification titles and messages, e.g. "Waschmaschine"
+        or "Spülmaschine".
+      selector:
+        text: {}
+
+    power_sensor:
+      name: Power Sensor
+      description: >
+        Sensor measuring the current power consumption of the appliance in
+        Watts.
+      selector:
+        entity:
+          domain: sensor
+          device_class: power
+          multiple: false
+
+    off_power_limit:
+      name: Off Power Limit (W)
+      description: >
+        Power below this threshold is considered "off" (cycle finished).
+      default: 0.1
+      selector:
+        number:
+          min: 0
+          max: 50
+          step: 0.1
+          unit_of_measurement: W
+          mode: box
+
+    standby_power_limit:
+      name: Standby Power Limit (W)
+      description: >
+        Power above this threshold means the appliance is actively running
+        (not just in standby or idle).
+      default: 5.0
+      selector:
+        number:
+          min: 0
+          max: 500
+          step: 0.5
+          unit_of_measurement: W
+          mode: box
+
+    status_entity:
+      name: Status Entity (optional)
+      description: >
+        input_text helper that displays the current appliance state in the UI.
+        Updated automatically at every state transition:
+        "Läuft" while running, "Nicht geleert" while waiting to be emptied,
+        "Aus" when idle. A " - Reinigung" suffix is appended when the cleanup
+        interval has been reached. Create one per appliance instance.
+        Leave empty to disable status display.
+      default: {}
+      selector:
+        entity:
+          domain: input_text
+          multiple: false
+
+    run_counter:
+      name: Run Counter (optional)
+      description: >
+        input_number helper that tracks the total number of completed cycles.
+        Incremented automatically after each cycle. When provided together with
+        Cleanup Enabled, a maintenance reminder is sent after every Cleanup
+        Interval cycles. Leave empty to disable run tracking.
+      default: {}
+      selector:
+        entity:
+          domain: input_number
+          multiple: false
+
+    cleanup_enabled:
+      name: Enable Cleanup Reminder
+      description: >
+        When enabled, sends the Cleanup Message instead of the Finished Message
+        once the run counter reaches the Cleanup Interval. Requires a Run
+        Counter to be configured.
+      default: false
+      selector:
+        boolean: {}
+
+    cleanup_interval:
+      name: Cleanup Interval (cycles)
+      description: >
+        Number of completed cycles after which the cleanup message is used.
+        Active whenever the run counter value equals or exceeds this number.
+        Only relevant when Cleanup Reminder is enabled.
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 500
+          step: 1
+          mode: box
+
+    door_sensor:
+      name: Door / Contact Sensor (optional)
+      description: >
+        Binary sensor for the appliance door. Behavior is controlled by
+        Door Sensor Mode below. Leave empty to disable all door sensor
+        functionality.
+      default: {}
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class:
+            - door
+            - opening
+          multiple: false
+
+    door_sensor_mode:
+      name: Door Sensor Mode
+      description: >
+        Controls how the door sensor is used. Only relevant when a Door /
+        Contact Sensor is configured.
+
+        Leerungs-Trigger: opening the door stops the empty reminder loop,
+        signalling that the appliance has been emptied. Suitable for washing
+        machines and dryers.
+
+        Benachrichtigung: sends a notification whenever the door opens while
+        the appliance is actively running (power above Standby Power Limit).
+        Suitable for dishwashers to remind someone to open a window for
+        ventilation. Does not interrupt cycle tracking or the reminder loop.
+      default: "empty_trigger"
+      selector:
+        select:
+          options:
+            - value: "empty_trigger"
+              label: "Leerungs-Trigger"
+            - value: "notification"
+              label: "Benachrichtigung (Tür auf während Betrieb)"
+
+    door_open_title:
+      name: Door Open Notification Title
+      description: >
+        Title for the door-open-while-running notification.
+        Only relevant in Benachrichtigung mode.
+      default: "Tür offen"
+      selector:
+        text: {}
+
+    door_open_message:
+      name: Door Open Notification Message
+      description: >
+        Message for the door-open-while-running notification.
+        Only relevant in Benachrichtigung mode.
+      default: "Bitte Fenster öffnen"
+      selector:
+        text: {}
+
+    empty_reminder_enabled:
+      name: Enable Empty Reminders
+      description: >
+        When enabled, sends repeating reminders to empty the appliance after a
+        cycle finishes. Reminders continue until the door sensor opens (if
+        configured) or the user taps "Erinnerung beenden".
+      default: false
+      selector:
+        boolean: {}
+
+    empty_reminder_interval:
+      name: Empty Reminder Interval (minutes)
+      description: >
+        How often to repeat the "please empty" reminder after the cycle
+        finishes. Only relevant when Empty Reminders are enabled.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 480
+          step: 5
+          unit_of_measurement: min
+          mode: box
+
+    finished_message:
+      name: Finished Message
+      description: >
+        Notification message sent when the appliance finishes a cycle.
+        Use {name} as a placeholder for the Appliance Name.
+      default: "{name} ist fertig."
+      selector:
+        text: {}
+
+    cleanup_message:
+      name: Cleanup Message
+      description: >
+        Notification message used instead of the Finished Message when the run
+        counter reaches the Cleanup Interval. Use {name} as a placeholder for
+        the Appliance Name.
+      default: "{name} ist fertig. Bitte jetzt reinigen."
+      selector:
+        text: {}
+
+    empty_reminder_message:
+      name: Empty Reminder Message
+      description: >
+        Notification message for repeating "please empty" reminders.
+        Use {name} as a placeholder for the Appliance Name.
+      default: "{name} ist fertig. Bitte leeren."
+      selector:
+        text: {}
+
+    cancel_action_id:
+      name: Cancel Action ID
+      description: >
+        Unique identifier for the "Erinnerung beenden" action button in
+        reminder push notifications. Must be unique per blueprint instance
+        when multiple whitegood automations are active (e.g.
+        WHITEGOOD_CANCEL_WASCHMASCHINE, WHITEGOOD_CANCEL_TROCKNER).
+
+        The cancel can also be triggered from a dashboard button or developer
+        tools by firing event_type: mobile_app_notification_action with
+        event_data.action set to this value.
+
+        Reminders resume automatically after the next completed cycle.
+      default: WHITEGOOD_REMINDER_CANCEL
+      selector:
+        text: {}
+
+    notify_dispatcher:
+      name: Notify Dispatcher Script
+      description: The Notify Dispatcher script instance used for routing.
+      selector:
+        entity:
+          domain: script
+          multiple: false
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/whitegood_reminder.yaml
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  power_sensor: !input power_sensor
+  status_entity: !input status_entity
+  run_counter: !input run_counter
+  cleanup_enabled: !input cleanup_enabled
+  cleanup_interval: !input cleanup_interval
+  standby_power_limit: !input standby_power_limit
+  off_power_limit: !input off_power_limit
+  empty_reminder_enabled: !input empty_reminder_enabled
+  empty_reminder_interval: !input empty_reminder_interval
+  door_sensor_mode: !input door_sensor_mode
+  appliance_name: !input appliance_name
+  finished_message: !input finished_message
+  cleanup_message: !input cleanup_message
+  empty_reminder_message: !input empty_reminder_message
+
+trigger:
+  - id: machine_started
+    platform: numeric_state
+    entity_id: !input power_sensor
+    above: !input standby_power_limit
+
+  - id: door_opened
+    platform: state
+    entity_id: !input door_sensor
+    to: "on"
+
+  - id: cancelled
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: !input cancel_action_id
+
+  - id: ha_start
+    platform: homeassistant
+    event: start
+
+action:
+  - alias: Stop if cancelled by user action
+    if: "{{ trigger.id == 'cancelled' }}"
+    then:
+      - alias: Update status to off when machine is not running
+        if: "{{ status_entity != {} and states(power_sensor) | float(0) <= standby_power_limit | float(0) }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: !input status_entity
+            data:
+              value: "Aus"
+      - stop: "Reminders cancelled by user"
+
+  - alias: Send door-open notification if in notification mode and appliance is running
+    if:
+      - "{{ trigger.id == 'door_opened' }}"
+      - "{{ door_sensor_mode == 'notification' }}"
+      - "{{ states(power_sensor) | float(0) > standby_power_limit | float(0) }}"
+    then:
+      - action: script.turn_on
+        target:
+          entity_id: !input notify_dispatcher
+        data:
+          variables:
+            notify_type: reminderHome
+            title: !input door_open_title
+            message: !input door_open_message
+            reminder_count: 0
+
+  - alias: Stop if door opened while appliance is not running (stops empty reminders)
+    if:
+      - "{{ trigger.id == 'door_opened' }}"
+      - "{{ states(power_sensor) | float(0) <= standby_power_limit | float(0) }}"
+    then:
+      - alias: Update status to off
+        if: "{{ status_entity != {} }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: !input status_entity
+            data:
+              value: "Aus"
+      - stop: "Door opened – appliance not running – reminders stopped"
+
+  - alias: Ensure appliance is actually running
+    condition: template
+    value_template: >
+      {{ states(power_sensor) | float(0) > standby_power_limit | float(0) }}
+
+  - alias: Update status to running
+    if: "{{ status_entity != {} }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: !input status_entity
+        data:
+          value: "Läuft"
+
+  - alias: Wait for appliance to finish
+    wait_for_trigger:
+      - platform: numeric_state
+        entity_id: !input power_sensor
+        below: !input off_power_limit
+    timeout: "24:00:00"
+    continue_on_timeout: false
+
+  - alias: Stop if appliance did not finish within 24 hours
+    if: "{{ wait.trigger is none }}"
+    then:
+      - alias: Reset status on timeout
+        if: "{{ status_entity != {} }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: !input status_entity
+            data:
+              value: "Aus"
+      - stop: "Timeout – appliance did not finish within 24 hours"
+
+  - alias: Calculate new run count
+    variables:
+      current_runs: >
+        {% if run_counter != {} %}
+          {{ (states(run_counter) | float(0) + 1) | int }}
+        {% else %}
+          0
+        {% endif %}
+
+  - alias: Determine whether cleanup is needed
+    variables:
+      needs_cleanup: >
+        {{ cleanup_enabled
+           and run_counter != {}
+           and current_runs >= cleanup_interval | int(30) }}
+
+  - alias: Update run counter in Home Assistant
+    if: "{{ run_counter != {} }}"
+    then:
+      - action: input_number.set_value
+        target:
+          entity_id: !input run_counter
+        data:
+          value: "{{ current_runs }}"
+
+  - alias: Send notification and optionally repeat reminders until emptied or cancelled
+    repeat:
+      while:
+        - condition: template
+          value_template: "true"
+      sequence:
+        - alias: Send notification (first iteration broadcasts, subsequent home-only)
+          action: script.turn_on
+          target:
+            entity_id: !input notify_dispatcher
+          data:
+            variables:
+              notify_type: reminderHomeOrFirstAll
+              title: "{{ appliance_name }}"
+              message: >
+                {% set tmpl = cleanup_message if needs_cleanup else
+                   (finished_message if repeat.index == 1 else empty_reminder_message) %}
+                {{ tmpl | replace('{name}', appliance_name) }}
+              reminder_count: "{{ repeat.index - 1 }}"
+              extra_data:
+                actions:
+                  - action: !input cancel_action_id
+                    title: Erinnerung beenden
+
+        - alias: Stop and update status if empty reminders are not configured
+          if: "{{ not empty_reminder_enabled or empty_reminder_interval | int(0) == 0 }}"
+          then:
+            - alias: Update status to off
+              if: "{{ status_entity != {} }}"
+              then:
+                - action: input_text.set_value
+                  target:
+                    entity_id: !input status_entity
+                  data:
+                    value: >
+                      Aus{%- if needs_cleanup %} - Reinigung{% endif %}
+            - stop: "Cycle finished, no empty reminders configured"
+
+        - alias: Update status to unemptied on first iteration
+          if: "{{ repeat.index == 1 and status_entity != {} }}"
+          then:
+            - action: input_text.set_value
+              target:
+                entity_id: !input status_entity
+              data:
+                value: >
+                  Nicht geleert{%- if needs_cleanup %} - Reinigung{% endif %}
+
+        - alias: Wait for door to open, cancel action, or reminder interval to elapse
+          wait_for_trigger:
+            - alias: Door opened – appliance emptied
+              platform: state
+              entity_id: !input door_sensor
+              to: "on"
+            - alias: Cancelled via mobile action
+              platform: event
+              event_type: mobile_app_notification_action
+              event_data:
+                action: !input cancel_action_id
+          timeout:
+            minutes: "{{ empty_reminder_interval }}"
+
+        - alias: Stop loop if door was opened or reminder was cancelled
+          if: "{{ wait.trigger is not none }}"
+          then:
+            - alias: Update status to off
+              if: "{{ status_entity != {} }}"
+              then:
+                - action: input_text.set_value
+                  target:
+                    entity_id: !input status_entity
+                  data:
+                    value: "Aus"
+            - stop: "Appliance emptied or reminders cancelled by user"
