@@ -40,8 +40,9 @@ blueprint:
     Reminders resume automatically after the next completed cycle.
 
     NOTIFICATION ROUTING: Uses the Notify Dispatcher script
-    (reminderHomeOrFirstAll type – broadcasts on first occurrence, then notifies
-    only persons currently home, falling back to broadcast if nobody is home).
+    (reminderHomeOrFirstAll type – notifies only persons currently home; broadcasts
+    once to all if nobody is home at the first occurrence, then suppresses until
+    someone returns).
   domain: automation
   author: deroetzi
   homeassistant:

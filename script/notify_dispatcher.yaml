@@ -18,9 +18,9 @@ blueprint:
     reminderHomeOrAll – Sends only to persons currently home. Falls back to broadcast
     if nobody is home.
 
-    reminderHomeOrFirstAll – Broadcasts on the first occurrence (reminder_count <
-    1), then sends only to home persons on subsequent reminders. Falls back to broadcast
-    if nobody is home.
+    reminderHomeOrFirstAll – Sends only to persons currently home. Falls back to a
+    one-time broadcast to all persons on the first occurrence (reminder_count < 1)
+    when nobody is home. Subsequent reminders are suppressed until someone is home again.
 
     FIELDS (passed on each script call): - notify_type: one of the four types above
     - title: notification title - message: notification body (required) - reminder_count:
@@ -110,7 +110,7 @@ sequence:
         "{% if notify_type in ['alert', 'reminderAll'] %}\n  true\n{% elif
         notify_type == 'reminderHomeOrAll' %}\n  {{ home_persons | length == 0 }}\n{%
         elif notify_type == 'reminderHomeOrFirstAll' %}\n  {{ (reminder_count | int)
-        < 1 or home_persons | length == 0 }}\n{% else %}\n  true\n{% endif %}\n"
+        < 1 and home_persons | length == 0 }}\n{% else %}\n  true\n{% endif %}\n"
       targets: "{{ persons if do_broadcast | bool else home_persons }}"
   - repeat:
       for_each: "{{ targets }}"
