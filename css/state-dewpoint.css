@@ -1,0 +1,6 @@
+@import url("/local/css/state-sensor.css");
+
+:host {
+    --sensor-top: var(--dewpoint-label, "Dewpoint");
+    --sensor-bottom: var(--dewpoint-unit, "°C");
+}

@@ -1,0 +1,7 @@
+@import url("/local/css/state-sensor.css");
+
+:host {
+    --sensor-top: var(--illuminance-label, "Illuminance");
+    --sensor-bottom: var(--illuminance-unit, "lx");
+    flex-basis: 30% !important;
+}

@@ -1,0 +1,8 @@
+:host {
+    --color: var(--color-button-automatic);
+    flex-basis: 50% !important;
+}
+
+:host([value="on"]) {
+    display: none;
+}

@@ -1,0 +1,15 @@
+:host custom-feature-button:nth-child(1) {
+    --sensor-top: var(--today-label, "Today");
+}
+
+:host custom-feature-button:nth-child(2) {
+    --sensor-top: var(--month-label, "Month");
+}
+
+:host custom-feature-button:nth-child(3) {
+    --sensor-top: var(--year-label, "Year");
+}
+
+:host custom-feature-button:nth-child(4) {
+    --sensor-top: var(--last-year-label, "Last year");
+}

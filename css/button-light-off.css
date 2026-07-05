@@ -1,0 +1,7 @@
+:host {
+    --color: var(--color-light-off)
+}
+
+:host(.selected) {
+    color: var(--color-light-off-label);
+}

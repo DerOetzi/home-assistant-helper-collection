@@ -1,0 +1,51 @@
+:root {
+    --color-red: #cc0000;
+    --color-green: #006600;
+    --color-blue: #33ccff;
+    --color-orange: #ff3300;
+    --color-yellow: #ffcc00;
+
+    --color-red-gradient: linear-gradient(to bottom right, var(--color-red) 20%, #ff3300 80%); 
+    --color-green-gradient: linear-gradient(to bottom right, var(--color-green) 20%, #009933 80%);
+    --color-blue-gradient: linear-gradient(to bottom right, var(--color-blue) 20%, #0066ff 80%);
+    --color-orange-gradient: linear-gradient(to bottom right, #ff3300 20%, #ff9900 80%);
+    --color-violet-gradient: linear-gradient(to bottom right, #cc6699 10%, #ff00ff 90%);
+    --color-yellow-gradient: linear-gradient(to bottom right, var(--color-yellow) 20%, #ffcc66 80%);
+
+    --color-light-on: linear-gradient(to bottom right, #ffcc00 10%, #ff9900 80%);
+    --color-light-on-label: #060606;
+    --color-light-off: linear-gradient(to bottom right, #ffff99 20%, #ffffff 95%);
+    --color-light-off-label: #060606;
+    --color-light-night: linear-gradient(to bottom right, #33ccff 30%, #ffffff 90%);
+    --color-light-night-label: #060606;
+
+    --color-light-spectrum-full: linear-gradient(-90deg, rgb(255,206, 166), rgb(255,146, 39));
+    --color-light-spectrum-small: linear-gradient(-90deg, rgb(255,206, 166), rgb(255,167, 87)); 
+
+    --color-button-automatic: var(--color-violet-gradient);
+    
+    --color-boost: var(--color-orange);
+    --color-boost-gradient: linear-gradient(to bottom right, #ff0000 10%, #ffcc00 90%);
+    --color-button-boost: var(--color-boost-gradient);
+    --color-comfort: var(--color-red);
+    --color-button-comfort: var(--color-red-gradient);
+    --color-eco: var(--color-green);
+    --color-button-eco: var(--color-green-gradient);
+    --color-frost: var(--color-blue);
+    --color-button-frost: var(--color-blue-gradient);
+
+    --today-label: "Heute";
+    --month-label: "Monat";
+    --year-label: "Jahr";
+    --last-year-label: "Letztes Jahr";
+
+    --temperature-label: "Temperatur";
+    --humidity-label: "Luftfeuchtigkeit";
+    --humidity-abs-label: "Abs. Luftfeuchte";
+    --dewpoint-label: "Taupunkt";
+    --pm25-label: "PM 2,5";
+    --illuminance-label: "Beleuchtung";
+
+    --color-window-open: var(--color-button-frost);
+    --window-label: "Fenster";
+}

@@ -1,0 +1,6 @@
+@import url("/local/css/state-sensor.css");
+
+:host {
+    --sensor-top: var(--humidity-abs-label, "Absolute Humidity");
+    --sensor-bottom: var(--humidity-abs-unit, "g/m³");
+}

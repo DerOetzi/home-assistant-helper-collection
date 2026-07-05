@@ -1,0 +1,16 @@
+@import url("/local/css/state-sensor.css");
+
+:host {
+  --sensor-top: var(--window-label);
+  --sensor-bottom: var(--window-name, " ");
+  flex-basis: 110% !important;
+}
+
+:host([value="on"]) {
+  --color: var(--color-window-open);
+  --opacity: 1;
+}
+
+.label {
+    letter-spacing: -0.03em;
+}

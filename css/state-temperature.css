@@ -1,0 +1,6 @@
+@import url("/local/css/state-sensor.css");
+
+:host {
+    --sensor-top: var(--temperature-label, "Temperature");
+    --sensor-bottom: var(--temperature-unit, "°C");
+}

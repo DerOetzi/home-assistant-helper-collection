@@ -1,0 +1,31 @@
+:host {
+  --color: transparent;
+  --md-ripple-pressed-color: transparent;
+  --md-ripple-hover-color: transparent;
+  --feature-border-radius: 0px;
+}
+
+.label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start !important;
+  text-align: left;
+  width: 100%;
+  font-size: 1.05em !important;
+  line-height: 1;
+  position: relative;
+}
+
+.label::before {
+    content: " ";
+    font-size: 0.65em;
+    margin-bottom: 0.1em;
+}
+
+.label::after {
+    content: var(--label-additional-state, " ");
+    font-size: 0.65em;
+    color: #888;
+    margin-top: 0.1em;
+    text-align: left;
+}

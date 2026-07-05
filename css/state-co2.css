@@ -1,0 +1,6 @@
+@import url("/local/css/state-sensor.css");
+
+:host {
+    --sensor-top: var(--co2-label, "CO₂");
+    --sensor-bottom: var(--co2-unit, "ppm");
+}

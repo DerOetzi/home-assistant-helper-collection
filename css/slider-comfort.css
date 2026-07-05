@@ -1,0 +1,7 @@
+:host {
+    --color: var(--color-comfort);
+    --label-color: cornsilk;
+    --background: var(--color-button-comfort);
+    --background-opacity: 0.3;
+    flex-basis: 200% !important;
+}

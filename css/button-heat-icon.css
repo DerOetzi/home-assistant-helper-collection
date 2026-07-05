@@ -1,0 +1,24 @@
+:host {
+    --color: transparent;
+    width: 48px !important;
+    flex: 0 0 auto !important;
+
+
+    --card-mod-icon: if(
+        style(--heat-required: on): mdi:fire-circle;
+        style(--heat-automation: on): mdi:auto-mode;
+        else: mdi:stop-circle-outline;
+    );
+}
+
+:host([value="Komfort"]) {
+    --icon-color: var(--color-comfort);
+}
+
+:host([value="Absenk"]) {
+    --icon-color: var(--color-eco);
+}
+
+:host([value="Frostschutz"]) {
+    --icon-color: var(--color-frost);
+}

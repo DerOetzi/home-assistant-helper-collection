@@ -1,0 +1,5 @@
+:host {
+    --label-color: var(--disabled-color);
+    --background: var(--color-light-spectrum-full);
+    --background-opacity: 1;
+}
