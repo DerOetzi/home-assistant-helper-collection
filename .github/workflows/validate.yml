@@ -7,19 +7,31 @@ on:
     branches: [main]
 
 jobs:
-  hassfest:
-    name: Hassfest
+  yaml-lint:
+    name: YAML syntax check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: home-assistant/actions/hassfest@master
-
-  hacs:
-    name: HACS Validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: HACS validation
-        uses: hacs/action@main
+      - uses: actions/setup-python@v5
         with:
-          category: integration
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Validate blueprint/script/template YAML files
+        run: |
+          python - <<'EOF'
+          import pathlib
+          import sys
+          import yaml
+
+          failed = False
+          for pattern in ("blueprints/**/*.yaml", "script/**/*.yaml", "templates/**/*.yaml"):
+              for path in pathlib.Path(".").glob(pattern):
+                  try:
+                      yaml.safe_load(path.read_text())
+                  except yaml.YAMLError as exc:
+                      failed = True
+                      print(f"::error file={path}::{exc}")
+
+          sys.exit(1 if failed else 0)
+          EOF

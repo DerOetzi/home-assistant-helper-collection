@@ -1,47 +1,22 @@
-# DerOetzi Helpers — Home Assistant Custom Integration
+# Home Assistant Helper Collection
 
-> [!NOTE]
-> **This project is currently just a personal playground and not intended for production use.**
-> If you are looking for smart home helpers, check out my Node-RED project instead:
-> [node-red-contrib-smarthome-helper](https://github.com/DerOetzi/node-red-contrib-smarthome-helper)
+Eine Sammlung wiederverwendbarer Home-Assistant-Assets: Blueprints (Automationen), ein Blueprint-Script, Lovelace-CSS-Snippets und Template-Sensoren. Dieses Repo enthält **keine** Custom-Integration mehr (siehe unten) — für Custom Components gibt es jeweils eigene Repositories, z.B. [home-assistant-meals_and_groceries](https://github.com/DerOetzi/home-assistant-meals_and_groceries).
 
-A custom integration for [Home Assistant](https://www.home-assistant.io/) providing a collection of virtual helper entities.
+## Inhalt
 
-## Installation
+| Ordner       | Beschreibung                                              |
+|--------------|------------------------------------------------------------|
+| `blueprints/`| Automation-Blueprints (direkt über die Blueprint-Import-URL in Home Assistant importierbar) |
+| `script/`    | Blueprint-Scripts                                          |
+| `css/`       | CSS-Snippets für Lovelace-Karten (z.B. via `card-mod`)      |
+| `templates/` | Wiederverwendbare Template-Sensor-Definitionen              |
 
-### HACS (empfohlen)
+## Nutzung
 
-1. HACS öffnen → Integrationen → Benutzerdefiniertes Repository hinzufügen
-2. URL: `https://github.com/deroetzi/home-assistant-helper-collection`
-3. Kategorie: Integration
-4. Herunterladen und Home Assistant neu starten
+- **Blueprints**: In Home Assistant unter Einstellungen → Automatisierungen & Szenen → Blueprints → Blueprint importieren die Raw-URL der jeweiligen `.yaml`-Datei aus `blueprints/` einfügen.
+- **CSS**: Dateien aus `css/` als `local`-Ressource einbinden bzw. per `card-mod` referenzieren.
+- **Templates**: Inhalte aus `templates/` in die eigene `templates:`-Konfiguration übernehmen bzw. per `!include` einbinden.
 
-### Manuell
+## Hinweis zur Integration
 
-1. Den Ordner `custom_components/deroetzi_helpers/` in den `custom_components/`-Ordner deiner HA-Installation kopieren
-2. Home Assistant neu starten
-
-## Konfiguration
-
-1. **Einstellungen → Geräte & Dienste → Integration hinzufügen**
-2. Nach „DerOetzi Helpers" suchen
-3. Einen Namen eingeben und bestätigen
-
-## Plattformen
-
-| Plattform       | Beschreibung               |
-|-----------------|----------------------------|
-| `sensor`        | Berechnete Sensorwerte     |
-| `switch`        | Virtuelle Schalter         |
-| `binary_sensor` | Binäre Zustände            |
-| `climate`       | Virtueller Klimaregler     |
-
-## Entwicklung
-
-```bash
-# Abhängigkeiten installieren (für Linting/Tests)
-pip install homeassistant
-
-# Hassfest lokal ausführen
-python -m script.hassfest
-```
+Bis vor Kurzem enthielt dieses Repo unter `custom_components/deroetzi_helpers/` eine kleine, experimentelle Custom Integration. Sie wurde entfernt, da HACS pro Repository nur eine Integration verwaltet und Custom Components hier künftig grundsätzlich in eigenen, dedizierten Repositories gepflegt werden.
