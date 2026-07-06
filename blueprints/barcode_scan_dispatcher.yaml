@@ -1,0 +1,45 @@
+blueprint:
+  name: Barcode Scan Dispatcher
+  description: >
+    Forwards a barcode scanner's reported value to the Meals & Groceries
+    integration's `meals_and_groceries.scan_barcode` service. Works with any
+    entity that publishes the scanned code as its state (e.g. a USB HID
+    scanner bridged into MQTT).
+
+    Multiple scanners in different locations are simply multiple instances
+    of this blueprint, each pointing at its own scanner entity — the
+    Meals & Groceries integration itself has no concept of scanner hardware.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    barcode_scanner:
+      name: Barcode Scanner Entity
+      description: Sensor whose state is the most recently scanned barcode.
+      selector:
+        entity:
+          domain: sensor
+          multiple: false
+
+variables:
+  barcode_scanner: !input barcode_scanner
+
+trigger:
+  - platform: state
+    entity_id: !input barcode_scanner
+
+condition:
+  - alias: Scanned value is a real barcode
+    condition: template
+    value_template: >
+      {{ trigger.to_state.state not in ['unknown', 'unavailable', ''] }}
+
+action:
+  - alias: Forward barcode to Meals & Groceries
+    action: meals_and_groceries.scan_barcode
+    data:
+      barcode: "{{ trigger.to_state.state }}"
+
+mode: queued
+max_exceeded: silent
