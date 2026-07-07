@@ -1,0 +1,52 @@
+blueprint:
+  name: Shopping List Zone Selector
+  description: >
+    Selects the shopping list shown on the Meals & Groceries panel's
+    shopping-list tab when a person enters a zone — e.g. switch to the
+    Edeka list the moment someone arrives at the Edeka parking lot.
+
+    One instance of this blueprint per (zone → list) pairing; add the same
+    person(s) to several instances to cover multiple stores.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    persons:
+      name: Persons
+      description: Person entities whose arrival selects the list.
+      selector:
+        entity:
+          domain: person
+          multiple: true
+    zone:
+      name: Zone
+      description: Zone that represents the store.
+      selector:
+        entity:
+          domain: zone
+          multiple: false
+    shopping_list:
+      name: Shopping List
+      description: Meals & Groceries todo entity to show on the panel.
+      selector:
+        entity:
+          filter:
+            domain: todo
+            integration: meals_and_groceries
+          multiple: false
+
+trigger:
+  - platform: zone
+    entity_id: !input persons
+    zone: !input zone
+    event: enter
+
+action:
+  - alias: Select the store's shopping list on the panel
+    action: meals_and_groceries.select_shopping_list
+    data:
+      entity_id: !input shopping_list
+
+mode: single
+max_exceeded: silent
