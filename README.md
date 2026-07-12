@@ -1,5 +1,9 @@
 # Home Assistant Helper Collection
 
+[![Validate](https://github.com/DerOetzi/home-assistant-helper-collection/actions/workflows/validate.yml/badge.svg)](https://github.com/DerOetzi/home-assistant-helper-collection/actions/workflows/validate.yml)
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/DerOetzi?label=Sponsor)](https://github.com/sponsors/DerOetzi)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-ffdd00?logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/deroetzik)
+
 Eine Sammlung wiederverwendbarer Home-Assistant-Assets: Blueprints (Automationen), ein Blueprint-Script, Lovelace-CSS-Snippets und Template-Sensoren. Dieses Repo enthält **keine** Custom-Integration mehr (siehe unten) — für Custom Components gibt es jeweils eigene Repositories, z.B. [home-assistant-meals_and_groceries](https://github.com/DerOetzi/home-assistant-meals_and_groceries).
 
 ## Inhalt

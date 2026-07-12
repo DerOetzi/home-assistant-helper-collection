@@ -24,11 +24,21 @@ jobs:
           import sys
           import yaml
 
+          class HALoader(yaml.SafeLoader):
+              pass
+
+          HALoader.add_constructor(
+              "!input", lambda loader, node: loader.construct_scalar(node)
+          )
+          HALoader.add_constructor(
+              "!secret", lambda loader, node: loader.construct_scalar(node)
+          )
+
           failed = False
           for pattern in ("blueprints/**/*.yaml", "script/**/*.yaml", "templates/**/*.yaml"):
               for path in pathlib.Path(".").glob(pattern):
                   try:
-                      yaml.safe_load(path.read_text())
+                      yaml.load(path.read_text(), Loader=HALoader)
                   except yaml.YAMLError as exc:
                       failed = True
                       print(f"::error file={path}::{exc}")
