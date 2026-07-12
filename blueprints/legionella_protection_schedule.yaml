@@ -1,0 +1,138 @@
+blueprint:
+  name: Legionella Protection Schedule
+  description: >
+    Fires a water heater into a high-temperature operation mode (e.g.
+    "performance") at a fixed weekly time, but only when both:
+
+    - the water heater is not switched off, and
+    - a PV forecast sensor is above or below a configurable threshold
+      (whichever direction fits the time of day — e.g. run at night only on
+      a poor-forecast day, or at midday only on a good-forecast day, to
+      prefer solar surplus for the legionella-protection heating cycle when
+      available).
+
+    Instantiate this blueprint twice for a night/day pair: once with
+    `comparison: below` for an early/night slot (heat now because there
+    won't be much PV later), and once with `comparison: above` for a midday
+    slot (heat now while there is PV surplus).
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    actor:
+      name: Water Heater
+      icon: mdi:water-boiler
+      input:
+        water_heater:
+          name: Water Heater
+          selector:
+            entity:
+              domain: water_heater
+        performance_mode:
+          name: High-Temperature Operation Mode
+          description: Operation mode value to set for the legionella-protection cycle.
+          default: performance
+          selector:
+            text: {}
+    schedule:
+      name: Schedule
+      icon: mdi:clock-outline
+      input:
+        trigger_time:
+          name: Trigger Time
+          selector:
+            time: {}
+        weekday:
+          name: Weekday(s)
+          default:
+            - tue
+          selector:
+            select:
+              multiple: true
+              options:
+                - label: Monday
+                  value: mon
+                - label: Tuesday
+                  value: tue
+                - label: Wednesday
+                  value: wed
+                - label: Thursday
+                  value: thu
+                - label: Friday
+                  value: fri
+                - label: Saturday
+                  value: sat
+                - label: Sunday
+                  value: sun
+    forecast_gate:
+      name: Forecast Gate
+      icon: mdi:weather-sunny
+      input:
+        forecast_sensor:
+          name: PV Forecast Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: energy
+        threshold:
+          name: Forecast Threshold
+          default: 30
+          selector:
+            number:
+              min: 0
+              max: 200
+              unit_of_measurement: kWh
+              mode: box
+        comparison:
+          name: Comparison
+          description: Run only when the forecast is above, or below, the threshold.
+          default: above
+          selector:
+            select:
+              options:
+                - label: Above threshold
+                  value: above
+                - label: Below threshold
+                  value: below
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/legionella_protection_schedule.yaml
+
+mode: single
+
+variables:
+  comparison: !input comparison
+
+triggers:
+  - trigger: time
+    at: !input trigger_time
+
+conditions:
+  - condition: time
+    weekday: !input weekday
+  - condition: not
+    conditions:
+      - condition: state
+        entity_id: !input water_heater
+        state: "off"
+  - condition: or
+    conditions:
+      - condition: and
+        enabled: "{{ comparison == 'above' }}"
+        conditions:
+          - condition: numeric_state
+            entity_id: !input forecast_sensor
+            above: !input threshold
+      - condition: and
+        enabled: "{{ comparison == 'below' }}"
+        conditions:
+          - condition: numeric_state
+            entity_id: !input forecast_sensor
+            below: !input threshold
+
+actions:
+  - action: water_heater.set_operation_mode
+    target:
+      entity_id: !input water_heater
+    data:
+      operation_mode: !input performance_mode
