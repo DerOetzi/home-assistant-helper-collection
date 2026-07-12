@@ -1,0 +1,334 @@
+blueprint:
+  name: Domestic Hot Water PV Controller
+  description: >
+    Decides between a PV-surplus and a normal operation mode for a domestic
+    hot water system, and writes the result to a select entity plus a
+    target temperature on a water heater.
+
+    Surplus mode requires all of: grid delivery above a lower threshold,
+    optionally battery state of charge above a threshold, optionally the
+    water tank temperature above a threshold — AND EITHER outside
+    temperature above an upper threshold (summer: assume there will be
+    enough PV without waiting) OR grid delivery above a higher threshold
+    stable for a configurable duration AND outside temperature above a
+    lower threshold (shoulder season: only commit once the surplus has
+    proven stable).
+
+    Pair with the "Manual Override Block" blueprint (target_entity: the
+    same select entity) so a person manually choosing a mode is not
+    immediately overwritten: this blueprint checks the resulting
+    input_boolean and skips writing while it is "on".
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    grid:
+      name: Grid Delivery
+      icon: mdi:transmission-tower-export
+      input:
+        grid_sensor:
+          name: Grid Delivery Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: power
+        grid_lower:
+          name: Grid Lower Threshold
+          default: 3000
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        grid_upper:
+          name: Grid Upper Threshold
+          default: 5000
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        grid_upper_stable_boolean:
+          name: Grid Upper Stable Flag
+          description: >
+            A plain input_boolean helper (create one, no configuration
+            needed on it). This blueprint maintains it itself — turning it
+            on once grid delivery has stayed above the upper threshold for
+            the stabilize time below, and off as soon as it drops back —
+            because numeric_state conditions cannot carry a `for:`
+            duration, only state conditions can.
+          selector:
+            entity:
+              domain: input_boolean
+        grid_stabilize_time:
+          name: Grid Upper Stabilize Time
+          description: How long grid delivery must stay above the upper threshold before it counts.
+          default:
+            minutes: 5
+          selector:
+            duration: {}
+    battery:
+      name: Battery Gate
+      icon: mdi:battery-high
+      collapsed: true
+      input:
+        battery_gate_enabled:
+          name: Enable Battery Gate
+          default: true
+          selector:
+            boolean: {}
+        battery_sensor:
+          name: Battery State of Charge Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: battery
+        battery_threshold:
+          name: Battery Threshold
+          default: 90
+          selector:
+            number:
+              min: 0
+              max: 100
+              unit_of_measurement: "%"
+              mode: box
+    outside:
+      name: Outside Temperature
+      icon: mdi:thermometer
+      input:
+        outside_temp_sensor:
+          name: Outside Temperature Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        outside_lower:
+          name: Outside Temperature Lower Threshold
+          description: Used for the shoulder-season condition (with stable grid upper).
+          default: 12
+          selector:
+            number:
+              min: -20
+              max: 40
+              unit_of_measurement: "°C"
+              mode: box
+        outside_upper:
+          name: Outside Temperature Upper Threshold
+          description: Used for the immediate summer condition.
+          default: 24
+          selector:
+            number:
+              min: -20
+              max: 40
+              unit_of_measurement: "°C"
+              mode: box
+    water_temp:
+      name: Water Temperature Gate
+      icon: mdi:coolant-temperature
+      collapsed: true
+      input:
+        water_temp_gate_enabled:
+          name: Enable Water Temperature Gate
+          default: true
+          selector:
+            boolean: {}
+        water_temp_sensor:
+          name: Water Tank Temperature Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        water_temp_gate:
+          name: Water Temperature Gate Threshold
+          default: 48
+          selector:
+            number:
+              min: 0
+              max: 90
+              unit_of_measurement: "°C"
+              mode: box
+    output:
+      name: Output
+      icon: mdi:water-boiler
+      input:
+        target_select:
+          name: Operation Mode Select
+          description: >
+            An input_select helper (not a generic select.* entity — those
+            use a different service, input_select.select_option, which
+            this blueprint calls).
+          selector:
+            entity:
+              domain: input_select
+        surplus_option:
+          name: Surplus Option
+          default: Überschuss
+          selector:
+            text: {}
+        normal_option:
+          name: Normal Option
+          default: Normalbetrieb
+          selector:
+            text: {}
+        water_heater:
+          name: Water Heater
+          selector:
+            entity:
+              domain: water_heater
+        surplus_temp:
+          name: Surplus Target Temperature
+          default: 53
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+        normal_temp:
+          name: Normal Target Temperature
+          default: 48
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+        override_blocked_boolean:
+          name: Manual Override Blocked Flag
+          description: >
+            input_boolean set by a paired "Manual Override Block" instance
+            watching the operation mode select. While "on", this blueprint
+            does not write to the select or the water heater.
+          selector:
+            entity:
+              domain: input_boolean
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/domestic_hotwater_pv_controller.yaml
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: numeric_state
+    entity_id: !input grid_sensor
+    above: !input grid_lower
+  - trigger: numeric_state
+    entity_id: !input grid_sensor
+    below: !input grid_lower
+  - id: grid_upper_stable
+    trigger: numeric_state
+    entity_id: !input grid_sensor
+    above: !input grid_upper
+    for: !input grid_stabilize_time
+  - id: grid_upper_unstable
+    trigger: numeric_state
+    entity_id: !input grid_sensor
+    below: !input grid_upper
+  - trigger: numeric_state
+    entity_id: !input battery_sensor
+    above: !input battery_threshold
+    enabled: !input battery_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input battery_sensor
+    below: !input battery_threshold
+    enabled: !input battery_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    above: !input outside_lower
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    below: !input outside_lower
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    above: !input outside_upper
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    below: !input outside_upper
+  - trigger: numeric_state
+    entity_id: !input water_temp_sensor
+    above: !input water_temp_gate
+    enabled: !input water_temp_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input water_temp_sensor
+    below: !input water_temp_gate
+    enabled: !input water_temp_gate_enabled
+  - trigger: state
+    entity_id: !input override_blocked_boolean
+    to: "off"
+
+actions:
+  - alias: Maintain the grid-upper-stable flag (independent of override block)
+    choose:
+      - conditions:
+          - condition: trigger
+            id: grid_upper_stable
+        sequence:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input grid_upper_stable_boolean
+      - conditions:
+          - condition: trigger
+            id: grid_upper_unstable
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input grid_upper_stable_boolean
+
+  - alias: Skip while a manual override block is active
+    condition: state
+    entity_id: !input override_blocked_boolean
+    state: "off"
+
+  - choose:
+      - alias: Surplus mode
+        conditions:
+          - condition: numeric_state
+            entity_id: !input grid_sensor
+            above: !input grid_lower
+          - condition: numeric_state
+            entity_id: !input battery_sensor
+            above: !input battery_threshold
+            enabled: !input battery_gate_enabled
+          - condition: numeric_state
+            entity_id: !input water_temp_sensor
+            above: !input water_temp_gate
+            enabled: !input water_temp_gate_enabled
+          - condition: or
+            conditions:
+              - condition: numeric_state
+                entity_id: !input outside_temp_sensor
+                above: !input outside_upper
+              - condition: and
+                conditions:
+                  - condition: state
+                    entity_id: !input grid_upper_stable_boolean
+                    state: "on"
+                  - condition: numeric_state
+                    entity_id: !input outside_temp_sensor
+                    above: !input outside_lower
+        sequence:
+          - action: input_select.select_option
+            target:
+              entity_id: !input target_select
+            data:
+              option: !input surplus_option
+          - action: water_heater.set_temperature
+            target:
+              entity_id: !input water_heater
+            data:
+              temperature: !input surplus_temp
+    default:
+      - alias: Normal mode
+        action: input_select.select_option
+        target:
+          entity_id: !input target_select
+        data:
+          option: !input normal_option
+      - action: water_heater.set_temperature
+        target:
+          entity_id: !input water_heater
+        data:
+          temperature: !input normal_temp

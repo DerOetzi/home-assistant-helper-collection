@@ -1,10 +1,20 @@
 blueprint:
-  name: Motion Controller – Manual Override
+  name: Manual Override Block
   description: >
-    Companion blueprint for the Motion Controller blueprint.
-    Detects manual changes to the target entity and blocks the automation
-    for a configurable duration. A new manual change during the block period
-    resets the timer (mode: restart).
+    Generic manual-override guard: detects a person-initiated change (via
+    context.user_id, not a change made by an automation/script) to any
+    entity and blocks a companion input_boolean for a configurable
+    duration. A new manual change during the block period resets the timer
+    (mode: restart).
+
+    Pair this with any automation that reads the blocked_boolean and skips
+    its own writes while it is "on" — e.g. a light/select controller that
+    should back off after a human overrides it, or a PV-surplus controller
+    that should not immediately overwrite a manually chosen operation mode.
+
+    Originally written for the Motion Controller blueprint, but the
+    mechanism is entity- and domain-agnostic (target_entity accepts any
+    entity, not just lights/selects).
   domain: automation
   author: deroetzi
   homeassistant:
@@ -14,17 +24,17 @@ blueprint:
     target_entity:
       name: Target Entity
       description: >
-        The entity controlled by the Motion Controller (e.g. light.living_room).
-        Manual changes to this entity trigger the block.
+        The entity whose manual changes should trigger the block (e.g.
+        light.living_room, input_select.some_mode, select.some_option).
       selector:
         entity:
 
     blocked_boolean:
       name: Blocked Switch
       description: >
-        The same input_boolean as in the Motion Controller blueprint.
-        Turned on when a manual override is detected and automatically
-        turned off again after the block duration.
+        input_boolean read by the paired automation. Turned on when a
+        manual override is detected and automatically turned off again
+        after the block duration.
       selector:
         entity:
           domain: input_boolean
@@ -38,6 +48,8 @@ blueprint:
           max: 240
           unit_of_measurement: min
           mode: box
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/manual_override_block.yaml
 
 mode: restart
 max_exceeded: silent
