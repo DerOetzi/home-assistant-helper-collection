@@ -1,0 +1,131 @@
+blueprint:
+  name: Domestic Hot Water Special Release Flag
+  description: >
+    Sets an input_boolean flag to "on" the moment any of three conditions on
+    a domestic hot water system becomes true (water heater in performance
+    mode, a PV-surplus select in its surplus option, or the tank temperature
+    above a threshold), and back to "off" only once all three have stayed
+    false continuously for a configurable delay.
+
+    Uses `mode: restart`: every relevant state change re-evaluates the
+    conditions immediately. If any condition is true, the flag turns on
+    right away. If all three are false, a delay timer starts before turning
+    the flag off — and any new state change during that delay cancels and
+    restarts the whole evaluation, so the flag only turns off after the
+    conditions have been stable for the full delay ("falling-edge debounce").
+
+    Typically feeds a downstream automation (e.g. a circulation pump
+    controller) that reads the flag to decide between continuous operation
+    and normal interval operation.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    conditions:
+      name: Conditions
+      icon: mdi:water-boiler
+      input:
+        water_heater:
+          name: Water Heater
+          description: Water heater entity whose operation mode is one of the release conditions.
+          selector:
+            entity:
+              domain: water_heater
+        performance_state:
+          name: Performance Operation Mode
+          description: Operation mode value that counts as "special release" (e.g. "performance").
+          default: performance
+          selector:
+            text: {}
+        surplus_select:
+          name: PV Surplus Select
+          description: Select entity reporting PV surplus mode.
+          selector:
+            entity:
+              domain: select
+        surplus_option:
+          name: Surplus Option
+          description: Option value that counts as "surplus active" (e.g. "Überschuss").
+          default: Überschuss
+          selector:
+            text: {}
+        water_temp_sensor:
+          name: Water Temperature Sensor
+          description: Tank/water temperature sensor.
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        water_temp_threshold:
+          name: Water Temperature Threshold
+          description: Release is active while the temperature is above this value.
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 100
+              unit_of_measurement: "°C"
+              mode: box
+    output:
+      name: Output
+      icon: mdi:flag
+      input:
+        target_boolean:
+          name: Target input_boolean
+          description: The input_boolean flag this blueprint controls.
+          selector:
+            entity:
+              domain: input_boolean
+        off_delay:
+          name: Off Delay (minutes)
+          description: How long all conditions must stay false before the flag turns off.
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 120
+              unit_of_measurement: min
+              mode: box
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/domestic_hotwater_special_release_flag.yaml
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input water_heater
+  - trigger: state
+    entity_id: !input surplus_select
+  - trigger: numeric_state
+    entity_id: !input water_temp_sensor
+    above: !input water_temp_threshold
+  - trigger: numeric_state
+    entity_id: !input water_temp_sensor
+    below: !input water_temp_threshold
+
+actions:
+  - alias: Turn on immediately, or wait out the off-delay before turning off
+    if:
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: !input water_heater
+            state: !input performance_state
+          - condition: state
+            entity_id: !input surplus_select
+            state: !input surplus_option
+          - condition: numeric_state
+            entity_id: !input water_temp_sensor
+            above: !input water_temp_threshold
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: !input target_boolean
+    else:
+      - delay:
+          minutes: !input off_delay
+      - action: input_boolean.turn_off
+        target:
+          entity_id: !input target_boolean

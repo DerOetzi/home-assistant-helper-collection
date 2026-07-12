@@ -1,0 +1,229 @@
+blueprint:
+  name: Domestic Hot Water Circulation Control
+  description: >
+    Controls a domestic hot water circulation pump with three modes,
+    evaluated in this order:
+
+    1. Special release active (e.g. a "sonderfreigabe" flag from
+       Domestic Hot Water Special Release Flag) → pump runs continuously.
+
+    2. Otherwise, if the water heater is in its normal heat-pump mode and
+       both a presence and a day-mode gate entity report "on" → pump
+       cycles in an on/off interval, with a longer duty cycle during two
+       configurable peak time windows (e.g. morning/evening usage) and a
+       shorter one otherwise.
+
+    3. Otherwise → pump stays off.
+
+    Uses `mode: restart`: any change to the special-release flag or the
+    three gate entities immediately re-evaluates and restarts the correct
+    branch, cancelling any in-progress interval cycle.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    actor:
+      name: Actor
+      icon: mdi:pump
+      input:
+        pump_switch:
+          name: Circulation Pump Switch
+          selector:
+            entity:
+              domain: switch
+    gates:
+      name: Gates
+      icon: mdi:gate
+      input:
+        special_release_entity:
+          name: Special Release Flag
+          description: Boolean-like entity (e.g. input_boolean) that forces continuous operation when "on".
+          selector:
+            entity: {}
+        water_heater:
+          name: Water Heater
+          selector:
+            entity:
+              domain: water_heater
+        water_heater_normal_state:
+          name: Water Heater Normal Operation Mode
+          description: Operation mode that counts as "normal circulation allowed" (e.g. "heat_pump").
+          default: heat_pump
+          selector:
+            text: {}
+        presence_entity:
+          name: Presence Entity
+          description: Entity that must be "on" for interval operation (e.g. binary_sensor.anwesenheit_oder_heimweg).
+          selector:
+            entity:
+              domain: binary_sensor
+        daymode_entity:
+          name: Day Mode Entity
+          description: Entity that must be "on" for interval operation (e.g. binary_sensor.tagmodus).
+          selector:
+            entity:
+              domain: binary_sensor
+    schedule:
+      name: Duty Cycle
+      icon: mdi:clock-outline
+      collapsed: true
+      input:
+        peak1_start:
+          name: Peak Window 1 Start
+          default: "05:00:00"
+          selector:
+            time: {}
+        peak1_end:
+          name: Peak Window 1 End
+          default: "09:00:00"
+          selector:
+            time: {}
+        peak2_start:
+          name: Peak Window 2 Start
+          default: "17:00:00"
+          selector:
+            time: {}
+        peak2_end:
+          name: Peak Window 2 End
+          default: "22:00:00"
+          selector:
+            time: {}
+        peak_on_duration:
+          name: Peak On Duration (minutes)
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+              mode: box
+        peak_off_duration:
+          name: Peak Off Duration (minutes)
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+              mode: box
+        offpeak_on_duration:
+          name: Off-Peak On Duration (minutes)
+          default: 2
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+              mode: box
+        offpeak_off_duration:
+          name: Off-Peak Off Duration (minutes)
+          default: 13
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+              mode: box
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/domestic_hotwater_circulation_control.yaml
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input special_release_entity
+  - trigger: state
+    entity_id: !input water_heater
+  - trigger: state
+    entity_id: !input presence_entity
+  - trigger: state
+    entity_id: !input daymode_entity
+
+actions:
+  - choose:
+      - alias: Special release active - continuous operation
+        conditions:
+          - condition: state
+            entity_id: !input special_release_entity
+            state: "on"
+        sequence:
+          - action: switch.turn_on
+            target:
+              entity_id: !input pump_switch
+
+      - alias: Normal interval operation allowed
+        conditions:
+          - condition: state
+            entity_id: !input water_heater
+            state: !input water_heater_normal_state
+          - condition: state
+            entity_id: !input presence_entity
+            state: "on"
+          - condition: state
+            entity_id: !input daymode_entity
+            state: "on"
+        sequence:
+          - repeat:
+              while:
+                - condition: state
+                  entity_id: !input special_release_entity
+                  state: "off"
+                - condition: state
+                  entity_id: !input water_heater
+                  state: !input water_heater_normal_state
+                - condition: state
+                  entity_id: !input presence_entity
+                  state: "on"
+                - condition: state
+                  entity_id: !input daymode_entity
+                  state: "on"
+              sequence:
+                - action: switch.turn_on
+                  target:
+                    entity_id: !input pump_switch
+                - choose:
+                    - conditions:
+                        - condition: time
+                          after: !input peak1_start
+                          before: !input peak1_end
+                      sequence:
+                        - delay:
+                            minutes: !input peak_on_duration
+                    - conditions:
+                        - condition: time
+                          after: !input peak2_start
+                          before: !input peak2_end
+                      sequence:
+                        - delay:
+                            minutes: !input peak_on_duration
+                  default:
+                    - delay:
+                        minutes: !input offpeak_on_duration
+                - action: switch.turn_off
+                  target:
+                    entity_id: !input pump_switch
+                - choose:
+                    - conditions:
+                        - condition: time
+                          after: !input peak1_start
+                          before: !input peak1_end
+                      sequence:
+                        - delay:
+                            minutes: !input peak_off_duration
+                    - conditions:
+                        - condition: time
+                          after: !input peak2_start
+                          before: !input peak2_end
+                      sequence:
+                        - delay:
+                            minutes: !input peak_off_duration
+                  default:
+                    - delay:
+                        minutes: !input offpeak_off_duration
+
+    default:
+      - action: switch.turn_off
+        target:
+          entity_id: !input pump_switch
