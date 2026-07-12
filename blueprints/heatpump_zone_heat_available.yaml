@@ -1,0 +1,82 @@
+blueprint:
+  name: Heat Pump Zone Heat Available
+  description: >
+    Gates a set of per-zone "heat available" switches (e.g. TRV/zone
+    controllers that should only call for heat once the heat pump is
+    actually producing usable flow temperature) on two conditions:
+
+    - the heat pump's climate entity is not "off", and
+    - the leaving/flow water temperature sensor is above a threshold.
+
+    All target switches are turned on together when both conditions hold,
+    and off together otherwise.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    gate:
+      name: Gate
+      icon: mdi:heat-pump
+      input:
+        climate_entity:
+          name: Heat Pump Climate Entity
+          selector:
+            entity:
+              domain: climate
+        temp_sensor:
+          name: Flow Temperature Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        temp_threshold:
+          name: Flow Temperature Threshold
+          default: 30
+          selector:
+            number:
+              min: 0
+              max: 80
+              unit_of_measurement: "°C"
+              mode: box
+    output:
+      name: Output
+      icon: mdi:radiator
+      input:
+        target_switches:
+          name: Heat Available Switches
+          selector:
+            target:
+              entity:
+                domain: switch
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/heatpump_zone_heat_available.yaml
+
+mode: single
+
+triggers:
+  - trigger: state
+    entity_id: !input climate_entity
+  - trigger: numeric_state
+    entity_id: !input temp_sensor
+    above: !input temp_threshold
+  - trigger: numeric_state
+    entity_id: !input temp_sensor
+    below: !input temp_threshold
+
+actions:
+  - if:
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: !input climate_entity
+            state: "off"
+      - condition: numeric_state
+        entity_id: !input temp_sensor
+        above: !input temp_threshold
+    then:
+      - action: switch.turn_on
+        target: !input target_switches
+    else:
+      - action: switch.turn_off
+        target: !input target_switches
