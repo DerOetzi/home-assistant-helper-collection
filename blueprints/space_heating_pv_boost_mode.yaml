@@ -1,0 +1,138 @@
+blueprint:
+  name: Space Heating PV Boost Mode
+  description: >
+    Decides whether space heating should run in a PV-surplus boost mode,
+    and writes the result to a select entity: "surplus" while the heat
+    pump's flow temperature is above a lower threshold AND EITHER the
+    flow temperature is already above a higher threshold (clearly enough
+    surplus heat available) OR a companion domestic-hot-water PV-surplus
+    select is already in its surplus option (if the water heater is
+    already running on surplus, there is spare PV to use for space
+    heating too).
+
+    Uses `mode: restart` with a single delay before evaluating and
+    writing: any relevant state change cancels a pending evaluation and
+    restarts the delay, reproducing a symmetric debounce on both the
+    surplus and normal transitions.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    flow_temp:
+      name: Flow Temperature
+      icon: mdi:thermometer
+      input:
+        flow_temp_sensor:
+          name: Flow Temperature Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        flow_temp_lower:
+          name: Flow Temperature Lower Threshold
+          default: 50
+          selector:
+            number:
+              min: 0
+              max: 80
+              unit_of_measurement: "°C"
+              mode: box
+        flow_temp_upper:
+          name: Flow Temperature Upper Threshold
+          default: 55
+          selector:
+            number:
+              min: 0
+              max: 80
+              unit_of_measurement: "°C"
+              mode: box
+    warmwater:
+      name: Domestic Hot Water Gate
+      icon: mdi:water-boiler
+      input:
+        warmwater_surplus_select:
+          name: Domestic Hot Water PV Surplus Select
+          selector:
+            entity:
+              domain: input_select
+        warmwater_surplus_option:
+          name: Domestic Hot Water Surplus Option
+          default: Überschuss
+          selector:
+            text: {}
+    output:
+      name: Output
+      icon: mdi:radiator
+      input:
+        target_select:
+          name: Space Heating Operation Mode Select
+          description: An input_select helper (uses input_select.select_option).
+          selector:
+            entity:
+              domain: input_select
+        surplus_option:
+          name: Surplus Option
+          default: Überschuss
+          selector:
+            text: {}
+        normal_option:
+          name: Normal Option
+          default: Normaler Heizbetrieb
+          selector:
+            text: {}
+        stabilize_delay:
+          name: Stabilize Delay
+          description: Both the surplus and normal transitions are delayed by this duration.
+          default:
+            minutes: 5
+          selector:
+            duration: {}
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/space_heating_pv_boost_mode.yaml
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: numeric_state
+    entity_id: !input flow_temp_sensor
+    above: !input flow_temp_lower
+  - trigger: numeric_state
+    entity_id: !input flow_temp_sensor
+    below: !input flow_temp_lower
+  - trigger: numeric_state
+    entity_id: !input flow_temp_sensor
+    above: !input flow_temp_upper
+  - trigger: numeric_state
+    entity_id: !input flow_temp_sensor
+    below: !input flow_temp_upper
+  - trigger: state
+    entity_id: !input warmwater_surplus_select
+
+actions:
+  - delay: !input stabilize_delay
+  - if:
+      - condition: numeric_state
+        entity_id: !input flow_temp_sensor
+        above: !input flow_temp_lower
+      - condition: or
+        conditions:
+          - condition: numeric_state
+            entity_id: !input flow_temp_sensor
+            above: !input flow_temp_upper
+          - condition: state
+            entity_id: !input warmwater_surplus_select
+            state: !input warmwater_surplus_option
+    then:
+      - action: input_select.select_option
+        target:
+          entity_id: !input target_select
+        data:
+          option: !input surplus_option
+    else:
+      - action: input_select.select_option
+        target:
+          entity_id: !input target_select
+        data:
+          option: !input normal_option
