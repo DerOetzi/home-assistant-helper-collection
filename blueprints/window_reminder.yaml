@@ -27,6 +27,11 @@ blueprint:
 
     NOTIFICATION ROUTING: Uses the Notify Dispatcher script (alert type for alarm and
     leaving, reminderHomeOrAll type for periodic reminders).
+
+    CUSTOM ACTIONS: Optionally run your own actions whenever the window opens or
+    closes (e.g. switching a TRV's window-open feature) via the "Custom Actions"
+    section below. These run independently of the notification/reminder logic
+    above and are skipped entirely when left empty.
   domain: automation
   author: deroetzi
   homeassistant:
@@ -128,6 +133,27 @@ blueprint:
         entity:
           domain: script
           multiple: false
+    custom_actions:
+      name: Custom Actions
+      icon: mdi:gesture-tap-button
+      collapsed: true
+      input:
+        on_window_open_actions:
+          name: On Window Open
+          description: >
+            Optional actions to run whenever the window opens (e.g. turning on
+            a TRV's window-open-external switch). Leave empty to skip.
+          default: []
+          selector:
+            action: {}
+        on_window_close_actions:
+          name: On Window Close
+          description: >
+            Optional actions to run whenever the window closes (e.g. turning
+            off a TRV's window-open-external switch). Leave empty to skip.
+          default: []
+          selector:
+            action: {}
   source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/window_reminder.yaml
 
 mode: restart
@@ -213,6 +239,14 @@ action:
                 title: Fenster offen
                 message: "Das Haus wurde verlassen und {{ window_name }} ist noch geöffnet!"
                 reminder_count: 0
+
+  - alias: Run custom action on window open
+    if: "{{ trigger.id == 'window_changed' and is_window_open }}"
+    then: !input on_window_open_actions
+
+  - alias: Run custom action on window close
+    if: "{{ trigger.id == 'window_changed' and not is_window_open }}"
+    then: !input on_window_close_actions
 
   - alias: Only continue when window is open, someone is home, and interval > 0
     condition: template
