@@ -23,8 +23,13 @@
         temp_entity: "sensor.TEMPERATUR"     # ← anpassen
         humi_entity: "sensor.LUFTFEUCHTE"    # ← anpassen
     - variables:
-        T: "{{ states(temp_entity) | float }}"
-        rH: "{{ states(humi_entity) | float }}"
+        # float(0) statt float: die Variablen werden ausgewertet, bevor
+        # availability greift. Ohne Default wirft ein 'unknown'-Quellsensor
+        # (z. B. direkt nach einem Neustart) einen Template-Fehler und der
+        # ganze Update-Lauf bricht ab. availability verhindert dann, dass
+        # der Ersatzwert 0 als echter Messwert veröffentlicht wird.
+        T: "{{ states(temp_entity) | float(0) }}"
+        rH: "{{ states(humi_entity) | float(0) }}"
         available: >-
           {{ states(temp_entity) | is_number
              and states(humi_entity) | is_number }}
