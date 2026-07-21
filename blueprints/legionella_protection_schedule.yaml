@@ -102,6 +102,8 @@ mode: single
 
 variables:
   comparison: !input comparison
+  forecast_sensor: !input forecast_sensor
+  threshold: !input threshold
 
 triggers:
   - trigger: time
@@ -115,20 +117,10 @@ conditions:
       - condition: state
         entity_id: !input water_heater
         state: "off"
-  - condition: or
-    conditions:
-      - condition: and
-        enabled: "{{ comparison == 'above' }}"
-        conditions:
-          - condition: numeric_state
-            entity_id: !input forecast_sensor
-            above: !input threshold
-      - condition: and
-        enabled: "{{ comparison == 'below' }}"
-        conditions:
-          - condition: numeric_state
-            entity_id: !input forecast_sensor
-            below: !input threshold
+  - condition: template
+    value_template: >-
+      {% set val = states(forecast_sensor) | float(0) %}
+      {{ val > threshold if comparison == 'above' else val < threshold }}
 
 actions:
   - action: water_heater.set_operation_mode
