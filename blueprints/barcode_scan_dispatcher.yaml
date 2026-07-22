@@ -1,45 +1,44 @@
 blueprint:
   name: Barcode Scan Dispatcher
   description: >
-    Forwards a barcode scanner's reported value to the Meals & Groceries
-    integration's `meals_and_groceries.scan_barcode` service. Works with any
-    entity that publishes the scanned code as its state (e.g. a USB HID
-    scanner bridged into MQTT).
+    Forwards every barcode scan published on an MQTT topic to the
+    Meals & Groceries integration's `meals_and_groceries.scan_barcode`
+    service. Triggers on the raw MQTT message rather than a derived
+    sensor's state, so scanning the same barcode repeatedly in a row
+    still fires every time (a `state` trigger would not re-fire on an
+    unchanged value).
 
     Multiple scanners in different locations are simply multiple instances
-    of this blueprint, each pointing at its own scanner entity — the
+    of this blueprint, each pointing at its own MQTT topic — the
     Meals & Groceries integration itself has no concept of scanner hardware.
   domain: automation
   author: deroetzi
   homeassistant:
     min_version: 2024.6.0
   input:
-    barcode_scanner:
-      name: Barcode Scanner Entity
-      description: Sensor whose state is the most recently scanned barcode.
+    mqtt_topic:
+      name: Barcode Scanner MQTT Topic
+      description: >
+        MQTT topic the scanner publishes each scanned barcode to
+        (e.g. scanner/kueche/barcode). The raw payload is used as-is
+        as the barcode.
       selector:
-        entity:
-          domain: sensor
-          multiple: false
-
-variables:
-  barcode_scanner: !input barcode_scanner
+        text:
 
 trigger:
-  - platform: state
-    entity_id: !input barcode_scanner
+  - platform: mqtt
+    topic: !input mqtt_topic
 
 condition:
   - alias: Scanned value is a real barcode
     condition: template
-    value_template: >
-      {{ trigger.to_state.state not in ['unknown', 'unavailable', ''] }}
+    value_template: "{{ trigger.payload not in ['', None] }}"
 
 action:
   - alias: Forward barcode to Meals & Groceries
     action: meals_and_groceries.scan_barcode
     data:
-      barcode: "{{ trigger.to_state.state }}"
+      barcode: "{{ trigger.payload }}"
 
 mode: queued
 max_exceeded: silent
