@@ -1,0 +1,93 @@
+blueprint:
+  name: Barcode Scan Display Overlay
+  description: >
+    Shows a short-lived overlay message on an ESPHome display's overlay
+    channel (an `input_text` helper) when a barcode is scanned via the
+    Meals & Groceries integration — either confirming the matched product
+    or flagging an unknown barcode. Works with any display that reacts to
+    that helper (see the `home-assistant-meals_and_groceries`/display
+    overlay framework); multiple displays are simply multiple instances of
+    this blueprint, each pointing at its own overlay helper.
+
+    Both texts may reference `{{ trigger.event.data.product_name }}` (only
+    available on the "added" event) and `{{ trigger.event.data.barcode }}`.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    overlay_helper:
+      name: Display Overlay Helper
+      description: >
+        The input_text helper a display's overlay text_sensor is bound to.
+      selector:
+        entity:
+          domain: input_text
+          multiple: false
+    text_added:
+      name: Text — Barcode erkannt
+      default: "{{ trigger.event.data.product_name }} auf Einkaufsliste hinzugefügt"
+      selector:
+        text:
+    duration_added:
+      name: Anzeigedauer — Barcode erkannt
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 30
+          unit_of_measurement: seconds
+          mode: box
+    text_unknown:
+      name: Text — Barcode unbekannt
+      default: "Unbekannter Barcode, bitte einpflegen"
+      selector:
+        text:
+    duration_unknown:
+      name: Anzeigedauer — Barcode unbekannt
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 30
+          unit_of_measurement: seconds
+          mode: box
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: event
+    event_type: meals_and_groceries_barcode_added
+    id: added
+  - trigger: event
+    event_type: meals_and_groceries_barcode_unknown
+    id: unknown
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: added
+        sequence:
+          - action: input_text.set_value
+            target:
+              entity_id: !input overlay_helper
+            data:
+              value: !input text_added
+          - delay: !input duration_added
+      - conditions:
+          - condition: trigger
+            id: unknown
+        sequence:
+          - action: input_text.set_value
+            target:
+              entity_id: !input overlay_helper
+            data:
+              value: !input text_unknown
+          - delay: !input duration_unknown
+  - action: input_text.set_value
+    target:
+      entity_id: !input overlay_helper
+    data:
+      value: ""
