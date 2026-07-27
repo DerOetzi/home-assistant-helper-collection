@@ -21,13 +21,14 @@
 .label::before {
   content: var(--sensor-top, " ");
   font-size: 0.65em;
-  color: #888;
+  color: var(--sensor-top-color, #888);
+  font-weight: var(--sensor-top-weight, inherit);
   margin-bottom: 0.1em;
 }
 
 .label::after {
   content: var(--sensor-bottom, " ");
   font-size: 0.65em;
-  color: #888;
+  color: var(--sensor-bottom-color, #888);
   margin-top: 0.1em;
 }
