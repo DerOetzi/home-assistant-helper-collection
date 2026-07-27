@@ -1,0 +1,62 @@
+blueprint:
+  name: Zone Action Trigger
+  description: >
+    Runs any configurable sequence of actions when one or more persons
+    enter (or leave) a zone — e.g. select a Meals & Groceries shopping
+    list and/or switch the panel's daily tab on arrival at a store, show
+    the meal plan again when arriving home, or anything else the action
+    editor supports.
+
+    One instance of this blueprint per (zone → actions) pairing. Since
+    the actions are fully configurable, this replaces having a dedicated
+    blueprint per use case — e.g. combine
+    `meals_and_groceries.select_shopping_list` and
+    `meals_and_groceries.select_panel_tab` in one instance for a store
+    zone, or call `meals_and_groceries.select_panel_tab` alone for a
+    "arriving home" zone.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    persons:
+      name: Persons
+      description: Person entities whose zone change runs the actions.
+      selector:
+        entity:
+          domain: person
+          multiple: true
+    zone:
+      name: Zone
+      description: Zone to trigger on.
+      selector:
+        entity:
+          domain: zone
+          multiple: false
+    event:
+      name: Event
+      description: Whether to trigger on entering or leaving the zone.
+      default: enter
+      selector:
+        select:
+          options:
+            - value: enter
+              label: Enter
+            - value: leave
+              label: Leave
+    actions:
+      name: Actions
+      description: The actions to run, e.g. select a shopping list and/or panel tab.
+      selector:
+        action: {}
+
+trigger:
+  - trigger: zone
+    entity_id: !input persons
+    zone: !input zone
+    event: !input event
+
+action: !input actions
+
+mode: queued
+max_exceeded: silent
