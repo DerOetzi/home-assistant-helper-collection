@@ -1,0 +1,52 @@
+blueprint:
+  name: Scheduled Switch Window
+  description: >
+    Turns a switch on at a fixed daily time and back off again after a
+    configurable duration — e.g. running a display's anti-burn-in cycle for
+    half an hour every night.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    actor:
+      name: Switch
+      icon: mdi:toggle-switch-outline
+      input:
+        target_switch:
+          name: Switch
+          selector:
+            entity:
+              domain: switch
+    schedule:
+      name: Schedule
+      icon: mdi:clock-outline
+      input:
+        trigger_time:
+          name: Start Time
+          selector:
+            time: {}
+        duration:
+          name: Duration
+          description: How long the switch stays on before it is turned off again.
+          default:
+            minutes: 30
+          selector:
+            duration: {}
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/scheduled_switch_window.yaml
+
+mode: single
+
+triggers:
+  - trigger: time
+    at: !input trigger_time
+
+actions:
+  - action: switch.turn_on
+    target:
+      entity_id: !input target_switch
+  - delay: !input duration
+  - action: switch.turn_off
+    target:
+      entity_id: !input target_switch
