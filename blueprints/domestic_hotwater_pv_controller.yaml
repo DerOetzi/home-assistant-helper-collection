@@ -6,8 +6,12 @@ blueprint:
     target temperature on a water heater.
 
     Surplus mode requires all of: grid delivery above a lower threshold,
-    optionally battery state of charge above a threshold, optionally the
-    water tank temperature above a threshold — AND EITHER outside
+    optionally battery state of charge above a threshold, optionally
+    battery discharge power below a threshold (i.e. battery not
+    discharging — robust when the battery is deliberately discharged for
+    grid services, where SoC never gets high and high grid export is not
+    PV surplus), optionally the water tank temperature above a threshold
+    — AND EITHER outside
     temperature above an upper threshold (summer: assume there will be
     enough PV without waiting) OR grid delivery above a higher threshold
     stable for a configurable duration AND outside temperature above a
@@ -95,6 +99,50 @@ blueprint:
               max: 100
               unit_of_measurement: "%"
               mode: box
+    battery_discharge:
+      name: Battery Discharge Gate
+      icon: mdi:battery-arrow-down
+      collapsed: true
+      input:
+        battery_discharge_gate_enabled:
+          name: Enable Battery Discharge Gate
+          description: >
+            Additional to the SoC gate: only allow surplus while the battery
+            is NOT meaningfully discharging (house load covered by PV, so any
+            export/charge is genuine PV surplus). Combine with a low SoC
+            threshold as a floor, or use instead of the SoC gate on systems
+            that deliberately discharge the battery for grid services.
+          default: false
+          selector:
+            boolean: {}
+        battery_discharge_sensor:
+          name: Battery Discharge Power Sensor
+          description: A power sensor reading the battery DISCHARGE power (positive when discharging).
+          selector:
+            entity:
+              domain: sensor
+              device_class: power
+        battery_discharge_threshold:
+          name: Battery Discharge Threshold
+          description: Surplus is gated closed while discharge power stays above this. Keep above idle / base-load noise.
+          default: 300
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        battery_discharge_stabilize_time:
+          name: Battery Discharge Stabilize Time
+          description: >
+            Debounce — discharge must stay across the threshold for this long
+            before it flips the gate, so a boost load that briefly pulls from
+            the battery does not immediately cancel itself.
+          default:
+            minutes: 2
+          selector:
+            duration:
+              enable_second: true
     outside:
       name: Outside Temperature
       icon: mdi:thermometer
@@ -236,6 +284,16 @@ triggers:
     below: !input battery_threshold
     enabled: !input battery_gate_enabled
   - trigger: numeric_state
+    entity_id: !input battery_discharge_sensor
+    below: !input battery_discharge_threshold
+    for: !input battery_discharge_stabilize_time
+    enabled: !input battery_discharge_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input battery_discharge_sensor
+    above: !input battery_discharge_threshold
+    for: !input battery_discharge_stabilize_time
+    enabled: !input battery_discharge_gate_enabled
+  - trigger: numeric_state
     entity_id: !input outside_temp_sensor
     above: !input outside_lower
   - trigger: numeric_state
@@ -292,6 +350,10 @@ actions:
             entity_id: !input battery_sensor
             above: !input battery_threshold
             enabled: !input battery_gate_enabled
+          - condition: numeric_state
+            entity_id: !input battery_discharge_sensor
+            below: !input battery_discharge_threshold
+            enabled: !input battery_discharge_gate_enabled
           - condition: numeric_state
             entity_id: !input water_temp_sensor
             above: !input water_temp_gate
