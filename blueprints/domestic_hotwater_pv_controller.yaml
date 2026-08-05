@@ -18,6 +18,14 @@ blueprint:
     lower threshold (shoulder season: only commit once the surplus has
     proven stable).
 
+    Surplus mode is released again only below a separate, lower release
+    threshold, and no mode change is written until a minimum hold time has
+    passed since the last one. Both exist because the surplus load itself
+    depresses grid delivery — without them the controller oscillates against
+    its own load, and every flip costs a write to the water heater (and, with
+    a cloud-backed integration, an API call). The heater target is also only
+    written when it actually differs from what is already set.
+
     Pair with the "Manual Override Block" blueprint (target_entity: the
     same select entity) so a person manually choosing a mode is not
     immediately overwritten: this blueprint checks the resulting
@@ -74,6 +82,22 @@ blueprint:
             minutes: 5
           selector:
             duration: {}
+        grid_release:
+          name: Grid Release Threshold
+          description: >
+            Hysteresis for the lower threshold. Surplus mode starts once grid
+            delivery rises above the lower threshold, but only ends once it
+            falls below THIS value — in between, the current mode is held.
+            Without it a grid reading hovering around the lower threshold
+            toggles the mode on every sensor update. Set it equal to the lower
+            threshold to disable hysteresis.
+          default: 1000
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
     battery:
       name: Battery Gate
       icon: mdi:battery-high
@@ -244,6 +268,20 @@ blueprint:
               max: 65
               unit_of_measurement: "°C"
               mode: box
+        min_hold_minutes:
+          name: Minimum Mode Hold Time
+          description: >
+            After a mode change, no further change is written for this long.
+            Guards against self-oscillation: switching to surplus adds load,
+            which pushes grid delivery back below the threshold, which
+            switches surplus off again. Set to 0 to disable.
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 120
+              unit_of_measurement: min
+              mode: box
         override_blocked_boolean:
           name: Manual Override Blocked Flag
           description: >
@@ -259,6 +297,13 @@ blueprint:
 mode: single
 max_exceeded: silent
 
+variables:
+  target_select_entity: !input target_select
+  water_heater_entity: !input water_heater
+  surplus_temp_value: !input surplus_temp
+  normal_temp_value: !input normal_temp
+  min_hold_minutes_value: !input min_hold_minutes
+
 triggers:
   - trigger: numeric_state
     entity_id: !input grid_sensor
@@ -266,6 +311,9 @@ triggers:
   - trigger: numeric_state
     entity_id: !input grid_sensor
     below: !input grid_lower
+  - trigger: numeric_state
+    entity_id: !input grid_sensor
+    below: !input grid_release
   - id: grid_upper_stable
     trigger: numeric_state
     entity_id: !input grid_sensor
@@ -340,12 +388,31 @@ actions:
     entity_id: !input override_blocked_boolean
     state: "off"
 
+  - alias: Skip until the minimum mode hold time has elapsed
+    condition: template
+    value_template: >
+      {% set mode = states[target_select_entity] %}
+      {{ mode is none
+         or (now() - mode.last_changed).total_seconds()
+            >= (min_hold_minutes_value | float(0)) * 60 }}
+
   - choose:
       - alias: Surplus mode
         conditions:
-          - condition: numeric_state
-            entity_id: !input grid_sensor
-            above: !input grid_lower
+          - alias: Above the lower threshold, or already in surplus and still above the release threshold
+            condition: or
+            conditions:
+              - condition: numeric_state
+                entity_id: !input grid_sensor
+                above: !input grid_lower
+              - condition: and
+                conditions:
+                  - condition: state
+                    entity_id: !input target_select
+                    state: !input surplus_option
+                  - condition: numeric_state
+                    entity_id: !input grid_sensor
+                    above: !input grid_release
           - condition: numeric_state
             entity_id: !input battery_sensor
             above: !input battery_threshold
@@ -377,6 +444,11 @@ actions:
               entity_id: !input target_select
             data:
               option: !input surplus_option
+          - alias: Stop here unless the water heater target actually needs changing
+            condition: template
+            value_template: >
+              {{ state_attr(water_heater_entity, 'temperature') | float(-1)
+                 != surplus_temp_value | float(0) }}
           - action: water_heater.set_temperature
             target:
               entity_id: !input water_heater
@@ -389,6 +461,11 @@ actions:
           entity_id: !input target_select
         data:
           option: !input normal_option
+      - alias: Stop here unless the water heater target actually needs changing
+        condition: template
+        value_template: >
+          {{ state_attr(water_heater_entity, 'temperature') | float(-1)
+             != normal_temp_value | float(0) }}
       - action: water_heater.set_temperature
         target:
           entity_id: !input water_heater
