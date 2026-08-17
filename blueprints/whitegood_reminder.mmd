@@ -2,14 +2,16 @@ flowchart TD
     T1([machine_started\npower steigt über standby_limit])
     T2([door_opened\nTürsensor → on])
     T3([cancelled\nmobile_app_notification_action])
+    T3b([button_pressed\nCancel-Button gedrückt])
     T4([ha_start\nHA Neustart])
 
     T1 --> C1
     T2 --> C1
     T3 --> C1
+    T3b --> C1
     T4 --> C1
 
-    C1{"trigger = cancelled?"}
+    C1{"cancelled\noder Button-Druck\n(from_state ≠ none)?"}
     C1 -->|ja| C2{"Maschine\nläuft noch?"}
     C2 -->|nein| SA1[Status: Aus]
     SA1 --> E1([Ende])
@@ -32,13 +34,14 @@ flowchart TD
     SR --> WF["Warten auf power < off_limit\nmax. 24 Stunden"]
     WF -->|Timeout| SAT["Status: Aus"]
     SAT --> E4([Ende])
-    WF -->|Fertig| CALC["Läufe +1 · Cleanup prüfen\nRun Counter schreiben"]
+    WF -->|Fertig| DAO["door_already_open prüfen\nTür schon offen + Leerungs-Trigger?"]
+    DAO --> CALC["Läufe +1 · Cleanup prüfen\nRun Counter schreiben"]
 
     CALC --> LS
 
     subgraph LOOP["Benachrichtigungs-Schleife"]
         LS["Benachrichtigung senden\nreminder_count = index − 1\nindex = 1 → Broadcast · index ≥ 2 → Home-only\nIteration 1: finished_msg · 2+: reminder_msg\nbeide: cleanup_msg wenn Reinigung fällig"]
-        LS --> EC{"empty_reminder\naktiviert?"}
+        LS --> EC{"empty_reminder aktiviert\nund Tür nicht\nschon offen?"}
         EC -->|nein| SA3["Status: Aus"]
         SA3 --> E5([Ende])
         EC -->|ja| FI{"1. Iteration?"}

@@ -19,7 +19,11 @@ blueprint:
     Empty Reminders: When enabled, repeating reminders are sent at the
     configured interval after a finished cycle. An optional door / contact
     sensor stops the loop when opened (machine emptied). Reminders can also be
-    stopped by tapping "Erinnerung beenden" in the push notification.
+    stopped by tapping "Erinnerung beenden" in the push notification or by
+    pressing the optional Cancel Button helper on a dashboard. If the door is
+    already open when the cycle finishes (someone emptied the appliance right
+    away), no repeating reminders are started at all and the status goes
+    straight to "Aus".
 
     Door Sensor: An optional door / contact sensor with two modes selectable
     per instance. Leerungs-Trigger (default): opening the door stops the empty
@@ -33,9 +37,10 @@ blueprint:
     and add it to your dashboard.
 
     CANCEL: The reminder loop can be stopped by tapping "Erinnerung beenden" in
-    the push notification (mobile app) or by firing the
-    mobile_app_notification_action event with the configured action ID from a
-    dashboard button or developer tools.
+    the push notification (mobile app), by pressing the optional Cancel Button
+    (input_button helper, e.g. a "Geleert" button on a dashboard), or by firing
+    the mobile_app_notification_action event with the configured action ID from
+    developer tools.
 
     Reminders resume automatically after the next completed cycle.
 
@@ -271,6 +276,19 @@ blueprint:
       selector:
         text: {}
 
+    cancel_button:
+      name: Cancel Button (optional)
+      description: >
+        input_button helper that stops the empty reminder loop when pressed,
+        e.g. a "Geleert" button on a dashboard. Does the same as tapping
+        "Erinnerung beenden" in the push notification. Create one per appliance
+        instance. Leave empty to disable.
+      default: {}
+      selector:
+        entity:
+          domain: input_button
+          multiple: false
+
     notify_dispatcher:
       name: Notify Dispatcher Script
       description: The Notify Dispatcher script instance used for routing.
@@ -286,6 +304,7 @@ max_exceeded: silent
 
 variables:
   power_sensor: !input power_sensor
+  door_sensor: !input door_sensor
   status_entity: !input status_entity
   run_counter: !input run_counter
   cleanup_enabled: !input cleanup_enabled
@@ -317,13 +336,20 @@ trigger:
     event_data:
       action: !input cancel_action_id
 
+  - id: button_pressed
+    alias: Cancel button pressed
+    platform: state
+    entity_id: !input cancel_button
+
   - id: ha_start
     platform: homeassistant
     event: start
 
 action:
   - alias: Stop if cancelled by user action
-    if: "{{ trigger.id == 'cancelled' }}"
+    if: >
+      {{ trigger.id == 'cancelled'
+         or (trigger.id == 'button_pressed' and trigger.from_state is not none) }}
     then:
       - alias: Update status to off when machine is not running
         if: "{{ status_entity != {} and states(power_sensor) | float(0) <= standby_power_limit | float(0) }}"
@@ -401,6 +427,13 @@ action:
               value: "Aus"
       - stop: "Timeout – appliance did not finish within 24 hours"
 
+  - alias: Check whether the door is already open (emptied right at the end of the cycle)
+    variables:
+      door_already_open: >
+        {{ door_sensor != {}
+           and door_sensor_mode == 'empty_trigger'
+           and is_state(door_sensor, 'on') }}
+
   - alias: Calculate new run count
     variables:
       current_runs: >
@@ -450,8 +483,11 @@ action:
                   - action: !input cancel_action_id
                     title: Erinnerung beenden
 
-        - alias: Stop and update status if empty reminders are not configured
-          if: "{{ not empty_reminder_enabled or empty_reminder_interval | int(0) == 0 }}"
+        - alias: Stop and update status if no empty reminders are needed
+          if: >
+            {{ not empty_reminder_enabled
+               or empty_reminder_interval | int(0) == 0
+               or door_already_open }}
           then:
             - alias: Update status to off
               if: "{{ status_entity != {} }}"
