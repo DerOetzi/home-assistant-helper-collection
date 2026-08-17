@@ -1,0 +1,815 @@
+blueprint:
+  name: Battery Grid Friendly Controller
+  description: >
+    Shaves the midday PV feed-in peak by making sure the house battery is
+    empty (or at least not freshly refilled) when the peak arrives, using the
+    SolarEdge StorEdge Remote Control registers exposed by solaredge2mqtt.
+
+    THE PROBLEM: on a good day the battery is already full by mid-morning —
+    charged from the first sun after the overnight discharge. It therefore
+    has no headroom left when production peaks around noon, and the whole
+    midday surplus goes to the grid unbuffered.
+
+    THE MODEL: this blueprint holds no phase state of its own. On every run
+    it derives one of three CONTROL MODES purely from current conditions and
+    writes it to the inverter:
+
+      Released        → Maximize Self Consumption. The controller restricts
+                        nothing: at night, while switched off, once the peak
+                        window has opened, and whenever the forecast service
+                        publishes no charge start time — which is its way of
+                        saying today cannot refill the battery (see the
+                        start-time input for why that is the whole
+                        bad-weather guard, and why this blueprint carries no
+                        production threshold of its own).
+      No recharge     → Discharge to Minimize Import. The battery covers
+                        house load but cannot charge, so headroom builds up
+                        towards the peak while the stored energy is used at
+                        the import tariff rather than sitting idle.
+      Discharge       → Discharge to Maximize Export. The battery is actively
+                        drained to the backup reserve once the roof carries
+                        the house on its own.
+
+    Because the target mode is recomputed from scratch every run and compared
+    against the inverter's own read-back, the controller is self-healing: if
+    the command timeout expires and the inverter reverts on its own, the next
+    run notices the divergence and rewrites.
+
+    The flip side is that while an operating mode is active, a manual change
+    to the command mode is reverted — within seconds, since the read-back is
+    itself a trigger. Setting the operating mode to "off" is the escape
+    hatch: it hands control back once and then leaves the inverter strictly
+    alone, so no separate override-block helper is needed.
+
+    TWO OPERATING MODES, selectable at runtime via an input_select: the full
+    sequence above, or "peak only" — which never discharges and only blocks
+    the morning recharge. Peak-only costs no extra battery throughput at all
+    compared to doing nothing, and still buffers whatever the battery had
+    left overnight. The full sequence roughly doubles daily throughput (an
+    extra ~4 kWh charged per day on a 9 kWh battery) in exchange for the full
+    peak absorption — worth checking against a throughput-limited battery
+    warranty before leaving it on year-round.
+
+    ECONOMICS: with a fixed tariff this is close to a wash. The energy
+    exported in the morning earns the feed-in rate; the energy charged back
+    at the peak would have earned the same feed-in rate had it been exported.
+    Net zero minus round-trip losses. The benefit is grid-friendly, not
+    monetary — do not expect this to lower a bill.
+
+    THE ONE PIECE OF STORED STATE is a "peak released today" flag. It cannot
+    be derived from current conditions because the forecast's optimal charge
+    start time moves during the day — observed shifting from 12:00 to 15:00
+    on a single afternoon. Without the flag the controller would fall back
+    out of the charge window when the estimate moved later. The flag is
+    cleared at sunrise and at sunset.
+
+    REGISTER WEAR: the StorEdge registers are not meant to be written
+    continuously. Writes are bounded by a minimum hold time, by the fact that
+    a mode is only written when it differs from the read-back, and by
+    solaredge2mqtt's own no-op suppression. The inverter's command timeout
+    watchdog is re-armed on every write to expire roughly an hour after
+    charging should be finished, so a Home Assistant outage leaves the
+    inverter reverting to its default mode at a harmless moment.
+
+    SET UP ONCE BY HAND, BEFORE USING THIS BLUEPRINT:
+
+      1. Storage control mode must be set to "Remote Control" (register
+         57348). Every remote-control register is silently ignored by the
+         inverter otherwise, so nothing this blueprint writes would take
+         effect. Switching an inverter into remote control is a deliberate,
+         one-time decision for a person to make, which is why it is neither
+         an input here nor something the automation checks or writes.
+      2. Storage default mode must be set to "Maximize Self Consumption"
+         (register 57354). That is what the command timeout watchdog falls
+         back to, and what the released control mode writes, so the fallback
+         becomes a no-op.
+      3. solaredge2mqtt needs `modbus.storedge_control_enabled: true` and
+         `forecast.enable: true`.
+
+    If step 1 is missed, the symptom is that the inverter's command mode never
+    follows what the controller writes — check that register first before
+    debugging anything else here.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    control:
+      name: Control
+      icon: mdi:transmission-tower
+      input:
+        mode_select:
+          name: Operating Mode
+          description: >
+            An input_select holding the three operating modes. Create it with
+            exactly the three option names configured below.
+          selector:
+            entity:
+              domain: input_select
+        mode_off_option:
+          name: Option Name — Off
+          description: No control at all; the inverter is left on its default mode.
+          default: Aus
+          selector:
+            text: {}
+        mode_discharge_option:
+          name: Option Name — Morning Discharge
+          description: >
+            Full sequence: block the morning recharge, export the remainder,
+            release at the forecast peak.
+          default: Morgendliches Entladen
+          selector:
+            text: {}
+        mode_peak_option:
+          name: Option Name — Peak Only
+          description: >
+            Block the morning recharge but never discharge. Costs no extra
+            battery throughput compared to no control at all.
+          default: Nur Peak
+          selector:
+            text: {}
+        peak_flag_boolean:
+          name: Peak Released Flag
+          description: >
+            A plain input_boolean (create one, no configuration needed on
+            it). This blueprint maintains it itself.
+
+            It is the only state the controller stores, and it is genuinely
+            not derivable: the forecast's optimal charge start time is
+            recomputed continuously and moves during the day. Once charging
+            has been released, a later estimate must not pull the controller
+            back into blocking mode — the flag latches that decision. Cleared
+            at sunrise and at sunset.
+          selector:
+            entity:
+              domain: input_boolean
+    inverter:
+      name: Inverter Control Entities
+      icon: mdi:solar-power-variant
+      input:
+        command_mode_select:
+          name: Storage Command Mode
+          description: >
+            The select exposing register 57357. This is both the write target
+            and the read-back the controller compares against — it is the
+            single source of truth for what the inverter is currently doing.
+          selector:
+            entity:
+              domain: select
+        command_timeout_number:
+          name: Command Timeout
+          description: >
+            The number exposing register 57355, re-armed on every mode write.
+          selector:
+            entity:
+              domain: number
+        backup_reserve_number:
+          name: Backup Reserve
+          description: >
+            Read-only for this blueprint. The discharge mode is only selected
+            while the state of charge is above this plus the offset below,
+            which is what stops the discharge — no separate safety net is
+            needed.
+          selector:
+            entity:
+              domain: number
+        discharge_limit_number:
+          name: Discharge Limit
+          selector:
+            entity:
+              domain: number
+        discharge_limit_watts:
+          name: Discharge Power
+          description: >
+            Written when the discharge mode starts. Lower values stretch the
+            morning discharge over more hours, which keeps more of the energy
+            in the house rather than exporting it — at the cost of possibly
+            not reaching the backup reserve before the peak.
+          default: 5000
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        command_self_consumption_option:
+          name: Option Label — Maximize Self Consumption
+          description: >
+            Written for the "released" control mode. Must match the
+            inverter's configured storage default mode, so that the watchdog
+            fallback is a no-op whenever the controller is not restricting.
+          default: Maximize Self Consumption
+          selector:
+            text: {}
+        command_minimize_import_option:
+          name: Option Label — Discharge to Minimize Import
+          description: >
+            Written for the "no recharge" control mode. Unlike "Off", this
+            actively discharges to cover house load — so the energy that
+            would otherwise sit idle until the discharge mode starts is used
+            to avoid grid import at the full tariff. It does not charge from
+            PV, so it blocks the recharge exactly like "Off" would.
+          default: Discharge to Minimize Import
+          selector:
+            text: {}
+        command_export_option:
+          name: Option Label — Discharge to Maximize Export
+          default: Discharge to Maximize Export
+          selector:
+            text: {}
+    battery:
+      name: Battery
+      icon: mdi:battery-high
+      input:
+        soc_sensor:
+          name: State of Charge Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: battery
+        soc_release_offset:
+          name: Reserve Offset
+          description: >
+            How far above the backup reserve the discharge is considered
+            finished. A small offset avoids waiting on the last fraction of a
+            percent, which the inverter approaches slowly.
+          default: 2
+          selector:
+            number:
+              min: 0
+              max: 20
+              unit_of_measurement: "%"
+              mode: box
+    start:
+      name: Discharge Start
+      icon: mdi:weather-sunset-up
+      collapsed: true
+      input:
+        sunrise_offset:
+          name: Sunrise Offset
+          description: >
+            When to take over control and block the morning recharge. Must be
+            early enough to beat the first charging — check your own state of
+            charge history for when the overnight minimum turns back upwards.
+          default:
+            minutes: 0
+          selector:
+            duration: {}
+        grid_delivery_sensor:
+          name: Grid Delivery Sensor
+          description: >
+            Power currently exported to the grid.
+
+            This is a valid "the roof carries the house" signal only because
+            the no-recharge mode prevents the battery from absorbing the
+            surplus first. Measured against uncontrolled data, the battery
+            was soaking up over 600 W of PV surplus while grid delivery never
+            exceeded 30 W — so without the block, this reading would never
+            reveal that the roof is already ahead.
+          selector:
+            entity:
+              domain: sensor
+              device_class: power
+        grid_delivery_threshold:
+          name: Grid Delivery Threshold
+          description: >
+            The discharge only starts once export exceeds this — proof that
+            the roof already carries the house load, so the battery energy is
+            genuinely surplus rather than energy the house is about to need.
+
+            No separate release threshold is needed: once discharging, grid
+            delivery is inflated by the battery itself and would be useless
+            as a stop signal. What ends the discharge is the state of charge
+            reaching the backup reserve.
+          default: 500
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        grid_stabilize_time:
+          name: Grid Delivery Stabilize Time
+          description: How long export must stay above the threshold before it counts.
+          default:
+            minutes: 5
+          selector:
+            duration: {}
+        min_hold_minutes:
+          name: Minimum Mode Hold Time
+          description: >
+            After writing a control mode, no different mode is written for
+            this long. Guards the read-back lag (the inverter needs a few
+            seconds to report a new mode, during which a second trigger would
+            see a false divergence) and damps any residual chatter around the
+            grid threshold.
+
+            Does not apply when the target is the released mode, so switching
+            off, a revised forecast or nightfall always take effect
+            immediately.
+          default: 10
+          selector:
+            number:
+              min: 0
+              max: 120
+              unit_of_measurement: min
+              mode: box
+    forecast:
+      name: Forecast
+      icon: mdi:chart-bell-curve
+      collapsed: true
+      input:
+        optimal_start_sensor:
+          name: Battery Charge Optimal Start Time
+          description: >
+            The solaredge2mqtt forecast timestamp sensor — the earliest time
+            at which charging from today's strongest remaining forecast slots
+            (sorted by output, accumulated until the target state of charge is
+            covered) should start. Only slots of the current day count.
+
+            This sensor carries the bad-weather judgement itself, which is why
+            this blueprint has no separate production threshold. The service
+            publishes NO start time in two cases:
+
+              - today's remaining production cannot cover what the battery
+                needs, or
+              - the battery needs no charge at all (already at target).
+
+            Both are read here as "do not restrict": the controller releases
+            and leaves the inverter alone. Emptying — or merely refusing to
+            refill — a battery that the day cannot recover means buying the
+            evening back at the import tariff.
+
+            This also makes the discharge self-limiting: as the state of
+            charge falls, the required charge energy rises, and the moment the
+            forecast can no longer cover it the sensor goes silent and the
+            discharge stops. That is a better stopping point than any fixed
+            threshold could express.
+
+            A transient "unavailable" (MQTT dropout) is treated as no
+            information rather than as a verdict, and the run is skipped.
+          selector:
+            entity:
+              domain: sensor
+              device_class: timestamp
+        remaining_today_sensor:
+          name: Energy Production Remaining Today
+          description: >
+            Informational only — it appears in the reminder notification so a
+            decision can be made from the phone. It is deliberately NOT used
+            as a control input: a fixed kWh threshold against a value that
+            falls towards zero all day inevitably trips every afternoon,
+            releasing the controller because the day is nearly over rather
+            than because it is weak. The forecast start-time sensor already
+            carries the correct judgement (see its description).
+
+            Note that solaredge2mqtt publishes this with
+            `state_class: total_increasing` although it falls over the day,
+            which corrupts its long-term statistics. The instantaneous value
+            shown in the notification is unaffected.
+          selector:
+            entity:
+              domain: sensor
+              device_class: energy
+        earliest_release_time:
+          name: Earliest Release Time
+          description: >
+            The peak is never released before this clock time, whatever the
+            forecast sensor says. The effective release point is the LATER of
+            this time and the sensor's own estimate.
+
+            This exists because the estimate is volatile: it was observed
+            moving seven times in five and a half hours (13:00 → 12:00 →
+            11:00 on one morning). Since the release latches for the day, a
+            single early reading would otherwise lock the controller out of
+            blocking mode — and a release that lands before the strongest
+            production hours refills the battery exactly in the window that
+            was supposed to stay empty.
+
+            Set it just before the earliest hour at which peak charging can
+            plausibly make sense for your roof. Too early and a jittery
+            forecast wins; too late and the battery may not reach full.
+          default: "11:30:00"
+          selector:
+            time: {}
+        charge_duration_estimate:
+          name: Charge Duration Estimate
+          description: >
+            Only used to size the inverter's command timeout watchdog, which
+            is set to expire roughly an hour after charging should be done.
+            Too short and a Home Assistant outage ends the sequence early;
+            too long and the inverter stays restricted longer than necessary.
+          default:
+            minutes: 120
+          selector:
+            duration: {}
+        fallback_charge_time:
+          name: Fallback Charge Time
+          description: >
+            Hard deadline. If the peak has not been released by this time it
+            is released anyway, whatever the forecast sensor says.
+          default: "15:00:00"
+          selector:
+            time: {}
+    notify:
+      name: Reminder Notification
+      icon: mdi:cellphone-message
+      collapsed: true
+      input:
+        reminder_enabled:
+          name: Enable Reminder
+          default: true
+          selector:
+            boolean: {}
+        notify_script:
+          name: Notify Dispatcher Script
+          description: A script instance of the "Notify Dispatcher" blueprint.
+          selector:
+            entity:
+              domain: script
+        reminder_time:
+          name: Reminder Time
+          description: >
+            When to ask about switching the controller on, if the operating
+            mode is still "off". Should be before the sunrise offset in
+            summer, so the answer arrives in time to matter.
+          default: "07:00:00"
+          selector:
+            time: {}
+        discharge_action_id:
+          name: Action ID — Morning Discharge
+          description: >
+            Identifier of the notification button that selects the full
+            sequence. Must be unique across all actionable notifications.
+          default: BATTERY_GRID_DISCHARGE
+          selector:
+            text: {}
+        peak_action_id:
+          name: Action ID — Peak Only
+          default: BATTERY_GRID_PEAK_ONLY
+          selector:
+            text: {}
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/battery_grid_friendly_controller.yaml
+
+mode: queued
+max: 5
+max_exceeded: silent
+
+trigger_variables:
+  t_optimal_entity: !input optimal_start_sensor
+  t_soc_entity: !input soc_sensor
+  t_reserve_entity: !input backup_reserve_number
+  t_release_offset: !input soc_release_offset
+
+variables:
+  mode_entity: !input mode_select
+  mode_off: !input mode_off_option
+  mode_discharge: !input mode_discharge_option
+  mode_peak: !input mode_peak_option
+  peak_flag_entity: !input peak_flag_boolean
+
+
+  command_mode_entity: !input command_mode_select
+  label_released: !input command_self_consumption_option
+  label_no_recharge: !input command_minimize_import_option
+  label_discharge: !input command_export_option
+
+  soc_entity: !input soc_sensor
+  reserve_entity: !input backup_reserve_number
+  release_offset: !input soc_release_offset
+  remaining_entity: !input remaining_today_sensor
+  grid_entity: !input grid_delivery_sensor
+  grid_threshold: !input grid_delivery_threshold
+  min_hold: !input min_hold_minutes
+  optimal_entity: !input optimal_start_sensor
+
+  earliest_release_str: !input earliest_release_time
+  charge_raw: !input charge_duration_estimate
+  charge_seconds: "{{ (charge_raw.days | default(0)) * 86400 + (charge_raw.hours | default(0)) * 3600 + (charge_raw.minutes | default(0)) * 60 + (charge_raw.seconds | default(0)) }}"
+
+  operating_mode: "{{ states(mode_entity) }}"
+  soc: "{{ states(soc_entity) | float(0) }}"
+  empty_level: "{{ states(reserve_entity) | float(10) + (release_offset | float(0)) }}"
+  sun_up: "{{ is_state('sun.sun', 'above_horizon') }}"
+
+  actual_mode: "{{ states(command_mode_entity) }}"
+  actual_known: "{{ actual_mode not in ['unknown', 'unavailable', 'none', ''] }}"
+
+  # "unavailable" and "unknown" mean different things on this sensor and must
+  # not be collapsed. "unknown" is a verdict from the service — today cannot
+  # cover the battery's need, or there is no need — and is acted on.
+  # "unavailable" is an MQTT dropout carrying no information at all; a 19
+  # second gap was observed in production, and reading it as a verdict would
+  # release the controller on no evidence.
+  optimal_raw: "{{ states(optimal_entity) }}"
+  inputs_available: >-
+    {{ optimal_raw != 'unavailable'
+       and states(soc_entity) not in ['unavailable', 'unknown']
+       and states(grid_entity) not in ['unavailable', 'unknown'] }}
+  # Timestamps, not datetimes: Home Assistant runs literal_eval over a rendered
+  # variable to recover its native type, and a datetime does not survive that
+  # round trip — it comes back as a string, and later arithmetic on it raises
+  # "unsupported operand type(s) for -: 'str' and 'datetime.timedelta'".
+  # A float timestamp round-trips cleanly. 0 means "no valid forecast".
+  optimal_ts: "{{ (optimal_raw | as_datetime).timestamp() if optimal_raw not in ['unknown', 'unavailable', 'none', ''] else 0 }}"
+  earliest_release_ts: "{{ today_at(earliest_release_str).timestamp() }}"
+  # The effective release point is the LATER of the forecast estimate and the
+  # configured floor. No lead time is subtracted: the estimate is volatile
+  # enough that pulling it forward reliably released before the strongest
+  # production hours — refilling the battery in exactly the window that was
+  # meant to stay empty. Correcting the estimate belongs upstream in
+  # solaredge2mqtt, not in a fudge factor here.
+  release_ts: "{{ [(optimal_ts | float(0)), (earliest_release_ts | float(0))] | max if (optimal_ts | float(0)) > 0 else 0 }}"
+
+  is_sundown: "{{ trigger is defined and trigger.id == 'sundown' }}"
+  is_sunrise: "{{ trigger is defined and trigger.id == 'sunrise' }}"
+  # Midnight of the current local day. The forecast sensor can go stale (the
+  # add-on stopping overnight leaves yesterday's timestamp in place), and a
+  # timestamp from yesterday is unconditionally "in the past" — which would
+  # read as "peak already due" at sunrise and suppress the whole sequence for
+  # the day. Requiring the release point to belong to today rejects that.
+  today_start_ts: "{{ now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp() }}"
+  charge_due: "{{ (trigger is defined and trigger.id == 'fallback_peak') or ((release_ts | float(0)) >= (today_start_ts | float(0)) and now().timestamp() >= (release_ts | float(0))) }}"
+  peak_released: "{{ (is_state(peak_flag_entity, 'on') and not is_sunrise) or (charge_due and sun_up) }}"
+  # A published start time is the service's confirmation that today can still
+  # refill the battery. Its absence is the bad-weather verdict — see the
+  # sensor's input description.
+  forecast_covers_today: "{{ (optimal_ts | float(0)) >= (today_start_ts | float(0)) and (optimal_ts | float(0)) > 0 }}"
+
+  # The discharge stop condition is the state of charge reaching the reserve,
+  # not a grid threshold: while discharging, grid delivery is inflated by the
+  # battery itself and cannot tell us anything. Because the state of charge
+  # only falls while a discharge-only mode is commanded, this gate cannot
+  # oscillate on its own.
+  should_discharge: "{{ operating_mode == mode_discharge and soc > empty_level and states(grid_entity) | float(0) > (grid_threshold | float(0)) }}"
+
+  # One single {{ }} expression on purpose. An {% if %} block renders the
+  # surrounding newlines and indentation into the result (measured: 24
+  # characters for a 6-character mode name), so the value only compared equal
+  # to a label because Home Assistant happens to strip the rendered output
+  # before use. Relying on that is invisible and one refactor away from
+  # breaking every comparison in this file.
+  desired_mode: >-
+    {{ label_released
+       if (operating_mode == mode_off
+           or not sun_up
+           or is_sundown
+           or peak_released
+           or not forecast_covers_today)
+       else (label_discharge if should_discharge else label_no_recharge) }}
+
+  # Guarded on the entity EXISTING, not on its state being known: variables are
+  # rendered before any action guard runs, and states[...] returns none for a
+  # missing entity, on which .last_changed would raise. An unavailable-but-
+  # existing entity still carries a usable last_changed.
+  seconds_in_mode: "{{ (now() - states[command_mode_entity].last_changed).total_seconds() if states[command_mode_entity] is not none else 0 }}"
+  # The hold only damps flapping between the two restricting modes. It must NOT
+  # delay a write when the inverter is currently unrestricted: that is either a
+  # watchdog expiry the controller has to correct, or the operator having just
+  # switched an operating mode on — and last_changed measures the entity, not
+  # our own write, so both would otherwise be stalled for the full hold time
+  # (up to 5 kW of unwanted charging in the meantime).
+  hold_blocked: >-
+    {{ desired_mode != label_released
+       and actual_mode != label_released
+       and (seconds_in_mode | float(0)) < (min_hold | float(0)) * 60 }}
+
+  watchdog_seconds: "{{ [[ ((( release_ts | float(0) ) if ( release_ts | float(0) ) > 0 else ( now().timestamp() + 7200 )) + (charge_seconds | int(0)) + 3600 - now().timestamp()) | int, 900] | max, 86400] | min }}"
+
+triggers:
+  - id: sunrise
+    alias: Take over before the first sun refills the battery
+    trigger: sun
+    event: sunrise
+    offset: !input sunrise_offset
+  - id: pv_ready
+    trigger: numeric_state
+    entity_id: !input grid_delivery_sensor
+    above: !input grid_delivery_threshold
+    for: !input grid_stabilize_time
+  - id: soc_reserve_reached
+    alias: >
+      Fires once when the state of charge crosses down to the reserve, which
+      is what ends the discharge. Deliberately a template trigger, not a plain
+      state trigger on the sensor: while charging at full power the state of
+      charge advances about a percent a minute, so an unfiltered state trigger
+      produced a run every minute all afternoon. A template trigger fires only
+      on the false-to-true edge, so this is one run at the crossing.
+
+      The threshold has to be built from two inputs (the reserve entity plus
+      the offset), which a numeric_state trigger cannot express.
+    trigger: template
+    value_template: >
+      {{ states(t_soc_entity) | float(100)
+         <= states(t_reserve_entity) | float(10) + (t_release_offset | float(0)) }}
+  - id: peak
+    alias: Optimal charge start reached — contains now(), so it re-renders every minute
+    trigger: template
+    value_template: >
+      {% set raw = states(t_optimal_entity) %}
+      {% if raw in ['unknown', 'unavailable', 'none', ''] %}
+        false
+      {% else %}
+        {{ now() >= (raw | as_datetime) }}
+      {% endif %}
+  - id: earliest_release
+    alias: >
+      Wake up at the release floor as well — when the floor is the later of
+      the two bounds, the forecast trigger above has already fired and passed,
+      so without this the release would wait for the next periodic sweep.
+    trigger: time
+    at: !input earliest_release_time
+  - id: fallback_peak
+    trigger: time
+    at: !input fallback_charge_time
+  - id: sundown
+    trigger: sun
+    event: sunset
+  - id: mode_changed
+    trigger: state
+    entity_id: !input mode_select
+  - id: inverter_changed
+    alias: >
+      The inverter's own read-back changing is a first-class trigger — it is
+      how a watchdog expiry or a manual override is noticed immediately
+      rather than at the next scheduled sweep.
+    trigger: state
+    entity_id: !input command_mode_select
+  - id: sweep
+    alias: >
+      Periodic re-evaluation. With no stored phase, self-healing depends on
+      the rule set actually being run; event triggers alone left multi-hour
+      gaps in observed operation.
+    trigger: time_pattern
+    minutes: "/15"
+  - id: reminder
+    trigger: time
+    at: !input reminder_time
+  - id: set_discharge
+    trigger: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: !input discharge_action_id
+  - id: set_peak
+    trigger: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: !input peak_action_id
+  - id: ha_start
+    trigger: homeassistant
+    event: start
+
+actions:
+  - alias: Apply the operating mode chosen from the notification
+    if:
+      - condition: trigger
+        id:
+          - set_discharge
+          - set_peak
+    then:
+      - action: input_select.select_option
+        target:
+          entity_id: !input mode_select
+        data:
+          option: "{{ mode_discharge if trigger.id == 'set_discharge' else mode_peak }}"
+      - stop: Operating mode set from notification
+
+  - alias: Remind about the disabled controller
+    if:
+      - condition: trigger
+        id: reminder
+    then:
+      - alias: Nothing to remind about while a mode is active
+        condition: state
+        entity_id: !input mode_select
+        state: !input mode_off_option
+      - action: script.turn_on
+        target:
+          entity_id: !input notify_script
+        data:
+          variables:
+            notify_type: reminderHomeOrAll
+            title: Netzdienliches Laden
+            message: >
+              Steuerung ist aus. Prognose heute noch
+              {{ states(remaining_entity) | float(0) | round(1) }} kWh,
+              Batterie bei {{ soc | round(0) }} %.
+            extra_data:
+              actions:
+                - action: !input discharge_action_id
+                  title: !input mode_discharge_option
+                - action: !input peak_action_id
+                  title: !input mode_peak_option
+        enabled: !input reminder_enabled
+      - stop: Reminder handled
+
+  - alias: >
+      Maintain the peak-released flag. Cleared at both ends of the day so a
+      missed sunset cannot carry yesterday's release into today, which would
+      otherwise suppress the whole sequence for a full day.
+    choose:
+      - conditions:
+          - "{{ is_sundown or is_sunrise or not sun_up }}"
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input peak_flag_boolean
+      - conditions:
+          - "{{ charge_due and sun_up and operating_mode != mode_off and not is_state(peak_flag_entity, 'on') }}"
+        sequence:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input peak_flag_boolean
+
+  - alias: >
+      Operating mode "off" means hands off — not "force the default mode".
+      This is the manual escape hatch: while off, the controller must not
+      touch the inverter at all, so the command mode can be set by hand
+      without being reverted. Without this guard the divergence check below
+      would fight any manual change within seconds, because a manual edit
+      fires the read-back trigger, and the periodic sweep would undo it
+      again every 15 minutes.
+
+      The one write still allowed here is the hand-back on the run that
+      observes the switch to off (or a restart finding the inverter still
+      restricted) — otherwise the inverter would stay in a restricting mode
+      until its own watchdog expired, which can be hours.
+
+      Note this guard sits AFTER the peak-flag housekeeping above on purpose,
+      so the daily reset keeps happening while the controller is off and a
+      stale flag cannot suppress the sequence on the day it is switched back
+      on.
+    if:
+      - "{{ operating_mode == mode_off }}"
+    then:
+      - if:
+          - >
+            {{ trigger is defined
+               and trigger.id in ['mode_changed', 'ha_start']
+               and actual_known
+               and actual_mode != label_released }}
+        then:
+          - action: select.select_option
+            target:
+              entity_id: !input command_mode_select
+            data:
+              option: !input command_self_consumption_option
+      - stop: Operating mode is off — hands off
+
+  - alias: >
+      Do nothing while the inverter's mode is not readable. Without this the
+      divergence check below would be trivially true during an MQTT dropout
+      and would write on no evidence.
+    condition: template
+    value_template: "{{ actual_known }}"
+
+  - alias: >
+      Do nothing while a control input is unavailable. Every sensor read here
+      carries a numeric default, so a dropout silently becomes 0 — which reads
+      as "no surplus", "empty battery" or "no forecast" and would drive a real
+      write. Only "unavailable"/"unknown" on these inputs is filtered; a
+      genuine "unknown" verdict from the forecast sensor is handled in
+      forecast_covers_today, not here.
+    condition: template
+    value_template: "{{ inputs_available }}"
+
+  - alias: The inverter already reports the mode we want
+    condition: template
+    value_template: "{{ desired_mode != actual_mode }}"
+
+  - alias: Hold the current mode a little longer
+    condition: template
+    value_template: "{{ not hold_blocked }}"
+
+  - alias: >
+      Re-arm the watchdog before every restricting write. The forecast's
+      charge-start estimate moves during the day, so a timeout armed once at
+      the start can expire before the controller intends to release — the
+      inverter would then revert on its own mid-sequence. Not needed for the
+      released mode, which is the fallback target anyway.
+    if:
+      - "{{ desired_mode != label_released }}"
+    then:
+      - action: number.set_value
+        target:
+          entity_id: !input command_timeout_number
+        data:
+          value: "{{ watchdog_seconds }}"
+
+  - alias: Set the discharge power before commanding the discharge
+    if:
+      - "{{ desired_mode == label_discharge }}"
+    then:
+      - action: number.set_value
+        target:
+          entity_id: !input discharge_limit_number
+        data:
+          value: !input discharge_limit_watts
+
+  - alias: Write the control mode
+    action: select.select_option
+    target:
+      entity_id: !input command_mode_select
+    data:
+      option: "{{ desired_mode }}"

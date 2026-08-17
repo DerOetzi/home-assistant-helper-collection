@@ -1,0 +1,117 @@
+flowchart TD
+    T1([sunrise + offset])
+    T2([pv_ready\nNetzeinspeisung > Schwelle, for: 5min])
+    T3([soc_changed\nSoC-Aenderung])
+    T4([peak\nnow >= optimal_start])
+    T4b([earliest_release\nUntergrenze z.B. 11:30])
+    T5([fallback_peak\nfeste Uhrzeit z.B. 15:00])
+    T6([sundown])
+    T7([mode_changed\ninput_select Betriebsart])
+    T8([inverter_changed\nReadback des Wechselrichters])
+    T9([sweep\nalle 15 min])
+    T10([reminder 07:00])
+    T11([set_discharge / set_peak\nNotification-Action])
+    T12([ha_start])
+
+    T1 --> A
+    T2 --> A
+    T3 --> A
+    T4 --> A
+    T4b --> A
+    T5 --> A
+    T6 --> A
+    T7 --> A
+    T8 --> A
+    T9 --> A
+    T10 --> A
+    T11 --> A
+    T12 --> A
+
+    A["Actions"] --> G1{"trigger = set_discharge\noder set_peak?"}
+    G1 -->|ja| M1["Betriebsart setzen\n+ stop"]
+    M1 --> E1([Ende])
+
+    G1 -->|nein| G2{"trigger = reminder\nund Betriebsart = Aus?"}
+    G2 -->|ja| M2["Notify: 2 Aktionsbuttons\n+ stop"]
+    M2 --> E2([Ende])
+
+    G2 -->|nein| PF["Peak-Merker pflegen"]
+    PF --> PF1{"sundown / sunrise\noder Sonne unten?"}
+    PF1 -->|ja| PFA["Merker aus"]
+    PF1 -->|nein| PF2{"charge_due und Sonne oben\nund Betriebsart aktiv?"}
+    PF2 -->|ja| PFB["Merker an"]
+
+    PFA --> D0
+    PFB --> D0
+    PF2 -->|nein| D0
+
+    D0{"Sollmodus herleiten"}
+
+    D0 -->|"Betriebsart = Aus\noder Sonne unten\noder trigger = sundown"| MR["Freigegeben"]
+    D0 -->|"Peak freigegeben\noder Sensor liefert keinen\nheutigen Ladestart"| MR
+    D0 -->|"Betriebsart = Morgendliches Entladen\nund SoC > Reserve+Offset\nund Export > Schwelle"| MD["Entladen"]
+    D0 -->|sonst| MN["Nicht nachladen"]
+
+    MR --> G3
+    MD --> G3
+    MN --> G3
+
+    G3{"Readback lesbar?\n(nicht unavailable/unknown)"}
+    G3 -->|nein| E3([Ende · keine Evidenz])
+
+    G3 -->|ja| G3b{"soc / grid / Ladestart-Sensor\nverfuegbar?"}
+    G3b -->|nein| E3b([Ende · keine Evidenz])
+
+    G3b -->|ja| G4{"Sollmodus != Readback?"}
+    G4 -->|nein| E4([Ende · stimmt bereits])
+
+    G4 -->|ja| G5{"Mindesthaltezeit abgelaufen?\n(entfaellt wenn Soll oder Ist\n= Freigegeben)"}
+    G5 -->|nein| E5([Ende · noch halten])
+
+    G5 -->|ja| W1{"Soll != Freigegeben?"}
+    W1 -->|ja| WD["command_timeout neu berechnen\n& schreiben"]
+    W1 -->|nein| W2
+    WD --> W2
+
+    W2{"Soll = Entladen?"}
+    W2 -->|ja| WL["discharge_limit schreiben"]
+    W2 -->|nein| WM
+    WL --> WM
+
+    WM["command_mode = Sollmodus\nschreiben"]
+    WM --> E7([Ende])
+
+    subgraph MODES["Die drei Regelmodi bilden 1:1 auf das Register ab"]
+        direction LR
+        MM1["Freigegeben\n= Maximize Self Consumption\nRegelung schraenkt nichts ein"]
+        MM2["Nicht nachladen\n= Discharge to Minimize Import\ndeckt Hauslast, laedt nicht"]
+        MM3["Entladen\n= Discharge to Maximize Export\nspeist aktiv ins Netz"]
+    end
+
+    subgraph STATE["Einziger gespeicherter Zustand"]
+        direction LR
+        S1["input_boolean Peak freigegeben"]
+        S2["nicht herleitbar, weil optimal_start\nim Tagesverlauf wandert\n(beobachtet: 7 Spruenge in 5,5 h)"]
+        S3["Reset bei Sonnenaufgang,\nSonnenuntergang und nachts"]
+    end
+
+    subgraph RELEASE["Freigabezeitpunkt"]
+        direction LR
+        R1["release_ts = max(Sensor, Untergrenze)"]
+        R2["kein Vorlauf mehr — er feuerte\nvor den staerksten Stunden und\nfuellte die Batterie im Fenster,\ndas leer bleiben sollte"]
+        R3["fallback_peak bleibt harte Deadline"]
+    end
+
+    subgraph GUARD["Schlechtwetter-Guard steckt im Sensor"]
+        direction LR
+        GA["Sensor veroeffentlicht keinen Start,\nwenn die Restprognose den Ladebedarf\nnicht deckt — oder kein Bedarf besteht"]
+        GB["=> keine eigene kWh-Schwelle;\neine feste Schwelle waere jeden\nNachmittag zwangsweise gerissen"]
+        GC["Nebeneffekt: die Entladung ist\nselbstbegrenzend — sinkt der SoC,\nsteigt der Bedarf, und sobald die\nPrognose ihn nicht mehr deckt,\nverstummt der Sensor"]
+    end
+
+    subgraph PREREQ["Einmalig manuell, nicht Teil der Automation"]
+        direction LR
+        P1["Storage Control Mode = Remote Control\n(Register 57348)"]
+        P2["Storage Default Mode =\nMaximize Self Consumption\n(Register 57354)"]
+        P3["fehlt Schritt 1, folgt der\ncommand_mode den Writes nicht —\ndort zuerst nachsehen"]
+    end
