@@ -36,6 +36,12 @@ blueprint:
     automatically at every state transition. Create one per appliance instance
     and add it to your dashboard.
 
+    Restart Recovery: On Home Assistant start, a status of "Läuft" or
+    "Nicht geleert" while the appliance is no longer running is resolved:
+    with the door closed the empty reminder loop resumes, with the door open
+    (or empty reminders disabled) the status is set to "Aus". A cycle that
+    finished during the downtime is counted once.
+
     CANCEL: The reminder loop can be stopped by tapping "Erinnerung beenden" in
     the push notification (mobile app), by pressing the optional Cancel Button
     (input_button helper, e.g. a "Geleert" button on a dashboard), or by firing
@@ -392,13 +398,44 @@ action:
               value: "Aus"
       - stop: "Door opened – appliance not running – reminders stopped"
 
+  - alias: Determine recovery state after a Home Assistant restart
+    variables:
+      recovery_status: >
+        {% if status_entity != {} %}
+          {{ (states(status_entity) or '').split(' - ') | first }}
+        {% else %}
+          {{ '' }}
+        {% endif %}
+      is_recovery: >
+        {{ trigger.id == 'ha_start'
+           and status_entity != {}
+           and states(power_sensor) | float(0) <= standby_power_limit | float(0)
+           and recovery_status in ['Läuft', 'Nicht geleert'] }}
+
+  - alias: Stop recovery if the appliance was already emptied while HA was down
+    if:
+      - "{{ is_recovery }}"
+      - >
+        {{ (door_sensor != {}
+            and door_sensor_mode == 'empty_trigger'
+            and is_state(door_sensor, 'on'))
+           or not empty_reminder_enabled }}
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: !input status_entity
+        data:
+          value: "Aus"
+      - stop: "Recovery – appliance emptied or empty reminders disabled"
+
   - alias: Ensure appliance is actually running
     condition: template
     value_template: >
-      {{ states(power_sensor) | float(0) > standby_power_limit | float(0) }}
+      {{ is_recovery
+         or states(power_sensor) | float(0) > standby_power_limit | float(0) }}
 
   - alias: Update status to running
-    if: "{{ status_entity != {} }}"
+    if: "{{ status_entity != {} and not is_recovery }}"
     then:
       - action: input_text.set_value
         target:
@@ -407,25 +444,28 @@ action:
           value: "Läuft"
 
   - alias: Wait for appliance to finish
-    wait_for_trigger:
-      - platform: numeric_state
-        entity_id: !input power_sensor
-        below: !input off_power_limit
-    timeout: "24:00:00"
-    continue_on_timeout: false
-
-  - alias: Stop if appliance did not finish within 24 hours
-    if: "{{ wait.trigger is none }}"
+    if: "{{ not is_recovery }}"
     then:
-      - alias: Reset status on timeout
-        if: "{{ status_entity != {} }}"
+      - alias: Wait for power to drop below the off limit
+        wait_for_trigger:
+          - platform: numeric_state
+            entity_id: !input power_sensor
+            below: !input off_power_limit
+        timeout: "24:00:00"
+        continue_on_timeout: true
+
+      - alias: Stop if appliance did not finish within 24 hours
+        if: "{{ wait.trigger is none }}"
         then:
-          - action: input_text.set_value
-            target:
-              entity_id: !input status_entity
-            data:
-              value: "Aus"
-      - stop: "Timeout – appliance did not finish within 24 hours"
+          - alias: Reset status on timeout
+            if: "{{ status_entity != {} }}"
+            then:
+              - action: input_text.set_value
+                target:
+                  entity_id: !input status_entity
+                data:
+                  value: "Aus"
+          - stop: "Timeout – appliance did not finish within 24 hours"
 
   - alias: Check whether the door is already open (emptied right at the end of the cycle)
     variables:
@@ -436,9 +476,14 @@ action:
 
   - alias: Calculate new run count
     variables:
+      cycle_already_counted: "{{ is_recovery and recovery_status == 'Nicht geleert' }}"
       current_runs: >
         {% if run_counter != {} %}
-          {{ (states(run_counter) | float(0) + 1) | int }}
+          {% if cycle_already_counted %}
+            {{ states(run_counter) | float(0) | int }}
+          {% else %}
+            {{ (states(run_counter) | float(0) + 1) | int }}
+          {% endif %}
         {% else %}
           0
         {% endif %}
@@ -451,7 +496,7 @@ action:
            and current_runs >= cleanup_interval | int(30) }}
 
   - alias: Update run counter in Home Assistant
-    if: "{{ run_counter != {} }}"
+    if: "{{ run_counter != {} and not cycle_already_counted }}"
     then:
       - action: input_number.set_value
         target:
@@ -474,8 +519,9 @@ action:
               notify_type: reminderHomeOrFirstAll
               title: "{{ appliance_name }}"
               message: >
+                {% set is_first = repeat.index == 1 and not cycle_already_counted %}
                 {% set tmpl = cleanup_message if needs_cleanup else
-                   (finished_message if repeat.index == 1 else empty_reminder_message) %}
+                   (finished_message if is_first else empty_reminder_message) %}
                 {{ tmpl | replace('{name}', appliance_name) }}
               reminder_count: "{{ repeat.index - 1 }}"
               extra_data:
