@@ -1,0 +1,453 @@
+blueprint:
+  name: Air Purifier PM2.5 Control
+  description: >
+    Replaces the sluggish factory auto mode of an air purifier (e.g. IKEA
+    STARKVIND) with an explicit PM2.5 fan curve. The device is driven purely by
+    this automation — auto mode is never used, and whenever the purifier falls
+    back into it (no percentage reported) the curve speed is re-applied.
+
+    The curve is a list of ascending PM2.5 thresholds. Speed 1 runs below the
+    first threshold, speed 2 above it, and so on, so a device with nine speeds
+    takes eight thresholds. A hysteresis band keeps the speed from oscillating
+    around a threshold: the speed is only reduced once the value has dropped
+    that far below the threshold that raised it.
+
+    A quiet window (typically night time) clamps the resulting speed between a
+    minimum and a maximum speed, so the purifier keeps cleaning at low noise
+    while people sleep. Outside the quiet window the full curve applies, which
+    makes the hours before bedtime the strongest cleaning phase.
+
+    Optional window contacts park the purifier at a low speed while a window
+    is open and follow the closing with a boost that may, if configured,
+    override the quiet window. Priority is: open window, post-window boost,
+    quiet window, pre-quiet boost, curve.
+
+    The automation never switches the purifier on or off — while the fan is
+    off it stays off. A speed is only sent when it actually differs from the
+    current one, so the device is not spammed with commands. A periodic
+    re-check picks up boost windows that expired without any entity changing
+    state.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    devices:
+      name: Geräte
+      icon: mdi:air-purifier
+      input:
+        purifier:
+          name: Air Purifier
+          description: >
+            Fan entity of the air purifier. Must support setting a percentage
+            (fan.set_percentage).
+          selector:
+            entity:
+              domain: fan
+              multiple: false
+        pm25_sensor:
+          name: PM2.5 Sensor
+          description: >
+            Particulate matter sensor driving the curve, usually the sensor
+            built into the purifier itself.
+          selector:
+            entity:
+              domain: sensor
+              device_class: pm25
+              multiple: false
+    curve:
+      name: Lüfterkurve
+      icon: mdi:chart-line
+      input:
+        speed_count:
+          name: Number of Fan Speeds
+          description: >
+            How many discrete speed steps the device has (IKEA STARKVIND: 9).
+            Used to convert a speed step into the percentage sent to the fan.
+          default: 9
+          selector:
+            number:
+              min: 1.0
+              max: 20.0
+              step: 1.0
+              mode: box
+        thresholds:
+          name: PM2.5 Thresholds
+          description: >
+            Ascending list of PM2.5 values in µg/m³, one less entry than there
+            are fan speeds. Speed 1 runs below the first value, the highest
+            speed above the last one.
+          default: [10, 13, 17, 21, 26, 32, 40, 50]
+          selector:
+            object: {}
+        hysteresis:
+          name: Hysteresis
+          description: >
+            The speed is only reduced once PM2.5 has dropped this far below the
+            threshold that triggered the higher speed.
+          default: 2
+          selector:
+            number:
+              min: 0.0
+              max: 50.0
+              step: 1.0
+              unit_of_measurement: µg/m³
+              mode: box
+    quiet:
+      name: Nachtabsenkung
+      icon: mdi:sleep
+      input:
+        quiet_start:
+          name: Quiet Window Start
+          description: Time from which the speed is clamped to the quiet limits.
+          default: "19:00:00"
+          selector:
+            time: {}
+        quiet_end:
+          name: Quiet Window End
+          description: Time at which the full curve takes over again.
+          default: "08:00:00"
+          selector:
+            time: {}
+        quiet_min_speed:
+          name: Quiet Minimum Speed
+          description: Lowest speed used inside the quiet window.
+          default: 1
+          selector:
+            number:
+              min: 1.0
+              max: 20.0
+              step: 1.0
+              mode: box
+        quiet_max_speed:
+          name: Quiet Maximum Speed
+          description: Highest speed used inside the quiet window.
+          default: 3
+          selector:
+            number:
+              min: 1.0
+              max: 20.0
+              step: 1.0
+              mode: box
+        boost_minutes:
+          name: Boost Window
+          description: >
+            Length of the boost window directly before the quiet window starts.
+            Set to 0 to disable the boost.
+          default: 60
+          selector:
+            number:
+              min: 0.0
+              max: 240.0
+              step: 5.0
+              unit_of_measurement: min
+              mode: box
+        boost_min_speed:
+          name: Boost Minimum Speed
+          description: >
+            Minimum speed inside the boost window, regardless of the measured
+            PM2.5 value. The curve may still ask for a higher speed.
+          default: 6
+          selector:
+            number:
+              min: 1.0
+              max: 20.0
+              step: 1.0
+              mode: box
+    windows:
+      name: Fensterkontakte
+      icon: mdi:window-open-variant
+      collapsed: true
+      input:
+        window_sensors:
+          name: Window Contacts (optional)
+          description: >
+            Window/door contacts of the same room. While at least one of them
+            is open the purifier is parked at the window speed — running the
+            curve against an open window only burns filter life. Leave empty to
+            ignore windows entirely.
+          default: []
+          selector:
+            entity:
+              domain:
+                - binary_sensor
+                - input_boolean
+              multiple: true
+              reorder: false
+        window_speed:
+          name: Window Speed
+          description: >
+            Speed used while a window is open. Keep it at 1 rather than
+            switching the purifier off — a stopped STARKVIND reports no PM2.5,
+            which leaves the automation blind when the window closes again.
+          default: 1
+          selector:
+            number:
+              min: 1.0
+              max: 20.0
+              step: 1.0
+              mode: box
+        window_delay:
+          name: Window Delay
+          description: >
+            How long a window has to stay open before the purifier is parked.
+            Debounces briefly opened windows.
+          default: 2
+          selector:
+            number:
+              min: 0.0
+              max: 60.0
+              step: 1.0
+              unit_of_measurement: min
+              mode: box
+        post_window_boost_minutes:
+          name: Post-Window Boost
+          description: >
+            Minutes of boost after the last window closed, cleaning out what was
+            let in. Uses the boost minimum speed. Set to 0 to disable.
+          default: 20
+          selector:
+            number:
+              min: 0.0
+              max: 240.0
+              step: 5.0
+              unit_of_measurement: min
+              mode: box
+        window_close_timestamp_helper:
+          name: Window Close Timestamp Helper
+          description: >
+            Optional input_datetime (date and time) the automation stamps
+            whenever a window really closes. Without it the post-window boost
+            derives the close time from the contact's last_changed, which also
+            jumps on a Home Assistant restart or when a sensor returns from
+            unavailable, causing a boost although no window ever moved.
+          default: ""
+          selector:
+            entity:
+              domain: input_datetime
+        post_window_boost_overrides_quiet:
+          name: Post-Window Boost Overrides Quiet Window
+          description: >
+            When enabled the post-window boost also runs inside the quiet
+            window, i.e. a window closed at night is followed by a full boost
+            instead of the quiet maximum speed.
+          default: false
+          selector:
+            boolean: {}
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/air_purifier_pm25_control.yaml
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  purifier: !input purifier
+  pm25_sensor: !input pm25_sensor
+  speed_count: !input speed_count
+  thresholds_input: !input thresholds
+  hysteresis: !input hysteresis
+  quiet_start: !input quiet_start
+  quiet_end: !input quiet_end
+  quiet_min_speed: !input quiet_min_speed
+  quiet_max_speed: !input quiet_max_speed
+  boost_minutes: !input boost_minutes
+  boost_min_speed: !input boost_min_speed
+  window_sensors: !input window_sensors
+  window_speed: !input window_speed
+  window_delay: !input window_delay
+  post_window_boost_minutes: !input post_window_boost_minutes
+  post_window_boost_overrides_quiet: !input post_window_boost_overrides_quiet
+  window_close_helper: !input window_close_timestamp_helper
+
+  pm25: "{{ states(pm25_sensor) | float(-1) }}"
+
+  thresholds: >-
+    {{ thresholds_input | map('float') | sort | list }}
+  max_speed: >-
+    {{ [speed_count | int, (thresholds | count) + 1] | min }}
+
+  # Speed while the value is rising: one above the number of passed thresholds.
+  target_up: >-
+    {{ [(thresholds | select('le', pm25) | list | count) + 1, max_speed | int]
+       | min }}
+  # Speed while the value is falling: thresholds must be undercut by the
+  # hysteresis band before the next lower speed is used.
+  target_down: >-
+    {{ [(thresholds | select('le', pm25 + (hysteresis | float))
+         | list | count) + 1, max_speed | int] | min }}
+
+  # 0 while the purifier sits in its factory auto mode (no percentage reported),
+  # which makes the curve speed be applied on the next run.
+  current_speed: >-
+    {{ ((state_attr(purifier, 'percentage') | float(0))
+        * (speed_count | int) / 100) | round(0) | int }}
+
+  raw_speed: >-
+    {% set up = target_up | int %}
+    {% set down = target_down | int %}
+    {% set cur = current_speed | int %}
+    {% if cur < 1 %}{{ up }}
+    {% elif up > cur %}{{ up }}
+    {% elif down < cur %}{{ down }}
+    {% else %}{{ cur }}{% endif %}
+
+  in_quiet_window: >-
+    {% set now_t = now().strftime('%H:%M:%S') %}
+    {% set s = quiet_start %}
+    {% set e = quiet_end %}
+    {% if s <= e %}{{ s <= now_t < e }}
+    {% else %}{{ now_t >= s or now_t < e }}{% endif %}
+
+  # Boost window: the configured minutes directly before the quiet window.
+  # Checked against today's and tomorrow's quiet start so a window reaching
+  # across midnight is still recognised. One single expression on purpose —
+  # an {% if %} branch would yield the string "false", which is truthy.
+  in_boost_window: >-
+    {% set span = timedelta(minutes=boost_minutes | int(0)) %}
+    {% set qs = today_at(quiet_start) %}
+    {% set qs_next = qs + timedelta(days=1) %}
+    {{ (boost_minutes | int(0)) > 0
+       and ((qs - span <= now() < qs)
+            or (qs_next - span <= now() < qs_next)) }}
+
+  # expand() is called inline everywhere: a variable holding state objects is
+  # rendered back into plain strings, which lose last_changed.
+  #
+  # A window only counts as open once it has been open for the delay.
+  window_open: >-
+    {{ expand(window_sensors)
+       | selectattr('state', 'eq', 'on')
+       | selectattr('last_changed', 'le',
+                    now() - timedelta(minutes=window_delay | int(0)))
+       | list | count > 0 }}
+
+  # A helper is authoritative for the last window close because the automation
+  # only stamps it on a real on -> off transition. Without one the fallback is
+  # last_changed, which a restart or a sensor returning from unavailable also
+  # refreshes, producing a boost although no window ever moved.
+  use_close_helper: >-
+    {{ window_close_helper not in ['', none]
+       and states(window_close_helper) not in ['unknown', 'unavailable'] }}
+
+trigger_variables:
+  quiet_start_tv: !input quiet_start
+  boost_minutes_tv: !input boost_minutes
+
+triggers:
+  - id: boost_start
+    trigger: template
+    value_template: >-
+      {% set minutes = boost_minutes_tv | int(0) %}
+      {{ minutes > 0
+         and today_at(quiet_start_tv) - timedelta(minutes=minutes)
+             <= now() < today_at(quiet_start_tv) }}
+  - id: window_opened
+    trigger: state
+    entity_id: !input window_sensors
+    to: "on"
+    for:
+      minutes: !input window_delay
+  # from: "on" matters: without it a sensor returning from `unavailable` fires
+  # this trigger and starts a post-window boost although no window ever moved.
+  - id: window_closed
+    trigger: state
+    entity_id: !input window_sensors
+    from: "on"
+    to: "off"
+  - id: pm25_changed
+    trigger: state
+    entity_id: !input pm25_sensor
+  - id: purifier_changed
+    trigger: state
+    entity_id: !input purifier
+  - id: quiet_start
+    trigger: time
+    at: !input quiet_start
+  - id: quiet_end
+    trigger: time
+    at: !input quiet_end
+  - id: ha_start
+    trigger: homeassistant
+    event: start
+  # Safety net: PM2.5 can stay constant for hours, and time-limited states
+  # (boost, post-window boost) expire without any entity changing state. Without
+  # a periodic re-check the fan would stay frozen at the last speed.
+  - id: periodic
+    trigger: time_pattern
+    minutes: "/5"
+
+# No top-level conditions: the timestamp below has to be stamped even when the
+# purifier is off or the speed already matches. The checks follow as sequence
+# conditions, which stop the run just the same.
+actions:
+  - alias: Stamp the real window close
+    if:
+      - condition: trigger
+        id: window_closed
+      - condition: template
+        value_template: "{{ use_close_helper }}"
+    then:
+      - action: input_datetime.set_datetime
+        target:
+          # Templated on purpose: `!input` would put an empty string here when
+          # no helper is configured, and an empty entity_id fails config
+          # validation at load — the whole automation would refuse to start.
+          entity_id: "{{ window_close_helper }}"
+        data:
+          timestamp: "{{ as_timestamp(now()) }}"
+
+  # Rendered here, not in `variables:`, because everything below depends on the
+  # timestamp written above — automation variables are rendered once when the
+  # run starts and would still hold the pre-stamp value.
+  - alias: Derive the target speed
+    variables:
+      last_close_ts: >-
+        {% if use_close_helper %}
+          {{ state_attr(window_close_helper, 'timestamp') | float(0) }}
+        {% elif (expand(window_sensors) | count) > 0 %}
+          {{ expand(window_sensors) | map(attribute='last_changed')
+             | map('as_timestamp') | list | max }}
+        {% else %}
+          0
+        {% endif %}
+      in_post_window_boost: >-
+        {{ (post_window_boost_minutes | int(0)) > 0
+           and (expand(window_sensors) | count) > 0
+           and (expand(window_sensors) | selectattr('state', 'eq', 'on')
+                | list | count) == 0
+           and (last_close_ts | float(0))
+               > as_timestamp(now())
+                 - (post_window_boost_minutes | int(0)) * 60 }}
+      # Priority: open window > post-window boost (may override quiet) >
+      # quiet window > pre-quiet boost > curve.
+      target_speed: >-
+        {% set s = raw_speed | int %}
+        {% if window_open %}
+          {{ window_speed | int }}
+        {% elif in_post_window_boost
+                and (post_window_boost_overrides_quiet or not in_quiet_window) %}
+          {{ [s, boost_min_speed | int] | max }}
+        {% elif in_quiet_window %}
+          {{ [[s, quiet_max_speed | int] | min, quiet_min_speed | int] | max }}
+        {% elif in_boost_window %}
+          {{ [s, boost_min_speed | int] | max }}
+        {% else %}
+          {{ s }}
+        {% endif %}
+      # Floor, never round: fan.set_percentage maps a percentage onto the next
+      # higher speed step (ceil), so 6/9 rounded up to 67 % would land on step 7.
+      target_percentage: >-
+        {{ ((target_speed | int) * 100 / (speed_count | int))
+           | round(0, 'floor') | int }}
+
+  - condition: state
+    entity_id: !input purifier
+    state: "on"
+  - condition: template
+    value_template: "{{ pm25 >= 0 }}"
+  - condition: template
+    value_template: "{{ (target_speed | int) != (current_speed | int) }}"
+  - action: fan.set_percentage
+    target:
+      entity_id: !input purifier
+    data:
+      percentage: "{{ target_percentage }}"
