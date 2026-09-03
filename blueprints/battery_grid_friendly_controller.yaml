@@ -303,6 +303,22 @@ blueprint:
           default: true
           selector:
             boolean: {}
+        heating_entity:
+          name: Heating Entity (optional)
+          description: >
+            binary_sensor, switch, input_boolean, or climate entity that
+            indicates whether the heating is active. When provided, the
+            reminder is suppressed while the heating is on. Leave empty to
+            always remind.
+          default: {}
+          selector:
+            entity:
+              domain:
+                - binary_sensor
+                - switch
+                - input_boolean
+                - climate
+              multiple: false
         notify_script:
           name: Notify Dispatcher Script
           description: A script instance of the "Notify Dispatcher" blueprint.
@@ -350,6 +366,9 @@ variables:
   mode_discharge: !input mode_discharge_option
   mode_peak: !input mode_peak_option
   peak_flag_entity: !input peak_flag_boolean
+  heating_entity: !input heating_entity
+  is_heating_on: >-
+    {{ heating_entity != {} and is_state(heating_entity, ['on', 'heat', 'heat_cool', 'auto']) }}
 
 
   command_mode_entity: !input command_mode_select
@@ -540,6 +559,9 @@ actions:
         condition: state
         entity_id: !input mode_select
         state: !input mode_off_option
+      - alias: Nothing to remind about while the heating is on
+        condition: template
+        value_template: "{{ not is_heating_on }}"
       - action: script.turn_on
         target:
           entity_id: !input notify_script
