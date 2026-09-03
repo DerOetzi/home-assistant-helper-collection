@@ -57,6 +57,8 @@ mode: single
 triggers:
   - trigger: state
     entity_id: !input climate_entity
+    not_from: unavailable
+    not_to: unavailable
   - trigger: numeric_state
     entity_id: !input temp_sensor
     above: !input temp_threshold

@@ -456,6 +456,7 @@ trigger:
 - id: bed_signal
   platform: state
   entity_id: !input awake_media_players
+  not_to: unavailable
 - id: bed_signal
   platform: state
   entity_id: !input living_area_lights
@@ -463,8 +464,9 @@ trigger:
   platform: state
   entity_id: !input bedroom_lights
 - id: bed_signal
-  platform: state
+  platform: numeric_state
   entity_id: !input bedroom_occupancy_sensor
+  above: !input bedroom_occupancy_threshold
 - id: bed_signal
   platform: state
   entity_id: !input outside_motion
