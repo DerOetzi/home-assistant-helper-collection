@@ -24,7 +24,9 @@ blueprint:
     depresses grid delivery — without them the controller oscillates against
     its own load, and every flip costs a write to the water heater (and, with
     a cloud-backed integration, an API call). The heater target is also only
-    written when it actually differs from what is already set.
+    written when it actually differs from what is already set. Point the
+    optional timestamp helper at an input_datetime to make the hold time
+    survive Home Assistant restarts.
 
     Pair with the "Manual Override Block" blueprint (target_entity: the
     same select entity) so a person manually choosing a mode is not
@@ -282,6 +284,19 @@ blueprint:
               max: 120
               unit_of_measurement: min
               mode: box
+        mode_changed_timestamp:
+          name: Last Mode Change Timestamp
+          description: >
+            Optional input_datetime helper with both date and time. When set,
+            this blueprint writes the time of every actual mode change to it
+            and measures the minimum hold time against it. Without it the hold
+            is measured against the select entity's last_changed, which Home
+            Assistant resets on every restart — so a restart re-arms the full
+            hold time and can strand the system in surplus mode.
+          default: []
+          selector:
+            entity:
+              domain: input_datetime
         override_blocked_boolean:
           name: Manual Override Blocked Flag
           description: >
@@ -303,6 +318,10 @@ variables:
   surplus_temp_value: !input surplus_temp
   normal_temp_value: !input normal_temp
   min_hold_minutes_value: !input min_hold_minutes
+  surplus_option_value: !input surplus_option
+  normal_option_value: !input normal_option
+  mode_changed_ts_entity: !input mode_changed_timestamp
+  previous_mode: "{{ states(target_select_entity) }}"
 
 triggers:
   - trigger: numeric_state
@@ -391,10 +410,17 @@ actions:
   - alias: Skip until the minimum mode hold time has elapsed
     condition: template
     value_template: >
-      {% set mode = states[target_select_entity] %}
-      {{ mode is none
-         or (now() - mode.last_changed).total_seconds()
-            >= (min_hold_minutes_value | float(0)) * 60 }}
+      {% set hold = (min_hold_minutes_value | float(0)) * 60 %}
+      {% set stamped = mode_changed_ts_entity is string
+                       and state_attr(mode_changed_ts_entity, 'timestamp') is not none %}
+      {% if stamped %}
+        {{ now().timestamp()
+           - (state_attr(mode_changed_ts_entity, 'timestamp') | float(0)) >= hold }}
+      {% else %}
+        {% set mode = states[target_select_entity] %}
+        {{ mode is none
+           or (now() - mode.last_changed).total_seconds() >= hold }}
+      {% endif %}
 
   - choose:
       - alias: Surplus mode
@@ -444,6 +470,18 @@ actions:
               entity_id: !input target_select
             data:
               option: !input surplus_option
+          - alias: Record the time of an actual mode change
+            if:
+              - condition: template
+                value_template: >
+                  {{ mode_changed_ts_entity is string
+                     and previous_mode != surplus_option_value }}
+            then:
+              - action: input_datetime.set_datetime
+                target:
+                  entity_id: !input mode_changed_timestamp
+                data:
+                  timestamp: "{{ now().timestamp() }}"
           - alias: Stop here unless the water heater target actually needs changing
             condition: template
             value_template: >
@@ -461,6 +499,18 @@ actions:
           entity_id: !input target_select
         data:
           option: !input normal_option
+      - alias: Record the time of an actual mode change
+        if:
+          - condition: template
+            value_template: >
+              {{ mode_changed_ts_entity is string
+                 and previous_mode != normal_option_value }}
+        then:
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: !input mode_changed_timestamp
+            data:
+              timestamp: "{{ now().timestamp() }}"
       - alias: Stop here unless the water heater target actually needs changing
         condition: template
         value_template: >
