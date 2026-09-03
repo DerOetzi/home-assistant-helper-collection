@@ -1,9 +1,9 @@
 flowchart TD
     T1([sunrise + offset])
     T2([pv_ready\nNetzeinspeisung > Schwelle, for: 5min])
-    T3([soc_changed\nSoC-Aenderung])
+    T3([soc_working_floor\nSoC <= Backup-Reserve + Offset])
+    T3b([soc_working_limit\nSoC >= Backup-Reserve + Arbeitsreserve])
     T4([peak\nnow >= optimal_start])
-    T4b([earliest_release\nUntergrenze z.B. 11:30])
     T5([fallback_peak\nfeste Uhrzeit z.B. 15:00])
     T6([sundown])
     T7([mode_changed\ninput_select Betriebsart])
@@ -16,8 +16,8 @@ flowchart TD
     T1 --> A
     T2 --> A
     T3 --> A
+    T3b --> A
     T4 --> A
-    T4b --> A
     T5 --> A
     T6 --> A
     T7 --> A
@@ -49,12 +49,21 @@ flowchart TD
 
     D0 -->|"Betriebsart = Aus\noder Sonne unten\noder trigger = sundown"| MR["Freigegeben"]
     D0 -->|"Peak freigegeben\noder Sensor liefert keinen\nheutigen Ladestart"| MR
-    D0 -->|"Betriebsart = Morgendliches Entladen\nund SoC > Reserve+Offset\nund Export > Schwelle"| MD["Entladen"]
-    D0 -->|sonst| MN["Nicht nachladen"]
+    D0 -->|"Betriebsart = Morgendliches Entladen"| DE{"SoC > Arbeitsgrenze\nund Export > Schwelle?"}
+    DE -->|ja| MD["Entladen"]
+    DE -->|nein| MN["Nicht nachladen"]
+
+    D0 -->|"Betriebsart = Nur Peak"| DP{"SoC <= Untergrenze?"}
+    DP -->|ja| MC["Nachladen\n= Freigegeben-Register"]
+    DP -->|nein| DP2{"SoC >= Arbeitsgrenze?"}
+    DP2 -->|ja| MN
+    DP2 -->|nein| DP3["Readback halten\nsonst Nicht nachladen"]
 
     MR --> G3
     MD --> G3
+    MC --> G3
     MN --> G3
+    DP3 --> G3
 
     G3{"Readback lesbar?\n(nicht unavailable/unknown)"}
     G3 -->|nein| E3([Ende · keine Evidenz])
@@ -70,22 +79,28 @@ flowchart TD
 
     G5 -->|ja| W1{"Soll != Freigegeben?"}
     W1 -->|ja| WD["command_timeout neu berechnen\n& schreiben"]
-    W1 -->|nein| W2
-    WD --> W2
-
-    W2{"Soll = Entladen?"}
-    W2 -->|ja| WL["discharge_limit schreiben"]
-    W2 -->|nein| WM
-    WL --> WM
+    W1 -->|nein| WM
+    WD --> WM
 
     WM["command_mode = Sollmodus\nschreiben"]
     WM --> E7([Ende])
 
-    subgraph MODES["Die drei Regelmodi bilden 1:1 auf das Register ab"]
+    subgraph MODES["Vier Regelzustaende auf drei Registerwerten"]
         direction LR
-        MM1["Freigegeben\n= Maximize Self Consumption\nRegelung schraenkt nichts ein"]
-        MM2["Nicht nachladen\n= Discharge to Minimize Import\ndeckt Hauslast, laedt nicht"]
-        MM3["Entladen\n= Discharge to Maximize Export\nspeist aktiv ins Netz"]
+        MM1["Freigegeben\n= Maximize Self Consumption (7)\nRegelung schraenkt nichts ein"]
+        MM4["Nachladen\n= Maximize Self Consumption (7)\nHaus zuerst vom Dach,\nUeberschuss in den Akku"]
+        MM2["Nicht nachladen\n= Discharge to Minimize Import (5)\ndeckt Hauslast, laedt nicht"]
+        MM3["Entladen\n= Discharge to Maximize Export (4)\nspeist aktiv ins Netz"]
+    end
+
+    subgraph LEVELS["Zwei Ebenen ueber der Backup-Reserve"]
+        direction LR
+        B1["Untergrenze = Backup-Reserve + Offset\nnur Nur Peak: Nachladen beginnt"]
+        B2["Arbeitsgrenze = Backup-Reserve + Arbeitsreserve\nNur Peak: Nachladen endet\nEntladen: Export endet"]
+        B3["10 % / 2 % / 10 % ergibt 12 und 20"]
+        B4["Spanne dazwischen = Energie,\ndie dem Haus vorbehalten bleibt\nund nie exportiert wird"]
+        B5["Nur Peak haelt sie per Hysterese,\nEntladen gibt sie einmalig ans Haus ab"]
+        B6["Backup-Reserve ist der Boden;\nkein Regelmodus kann darunter"]
     end
 
     subgraph STATE["Einziger gespeicherter Zustand"]
@@ -97,8 +112,8 @@ flowchart TD
 
     subgraph RELEASE["Freigabezeitpunkt"]
         direction LR
-        R1["release_ts = max(Sensor, Untergrenze)"]
-        R2["kein Vorlauf mehr — er feuerte\nvor den staerksten Stunden und\nfuellte die Batterie im Fenster,\ndas leer bleiben sollte"]
+        R1["release_ts = Sensorwert unveraendert"]
+        R2["kein Vorlauf und keine Untergrenze —\nsie feuerten vor den staerksten\nStunden und fuellten die Batterie im\nFenster, das leer bleiben sollte"]
         R3["fallback_peak bleibt harte Deadline"]
     end
 

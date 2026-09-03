@@ -5,16 +5,37 @@ blueprint:
     keeping the battery from refilling too early. Drives the SolarEdge StorEdge
     remote control registers exposed by solaredge2mqtt.
 
-    On every run one of three control modes is derived from current conditions
-    and written to the inverter:
+    On every run one of four control states is derived from current conditions
+    and written to the inverter. They map onto three register values, because
+    the refill writes the same one the released state does:
 
       Released      Maximize Self Consumption. No restriction — at night, while
                     switched off, after the peak has been released, and whenever
                     the forecast publishes no charge start time.
       No recharge   Discharge to Minimize Import. Covers house load but cannot
                     charge, so headroom builds up towards the peak.
-      Discharge     Discharge to Maximize Export. Drains to the backup reserve
-                    once grid export shows the roof carries the house alone.
+      Refill        Maximize Self Consumption again, but reached deliberately:
+                    "peak only" runs it once the battery counts as empty, so
+                    the house is served from the roof first and only the
+                    surplus goes back into the battery. Safe because the
+                    inverter's own backup reserve is the floor here, and no
+                    mode can discharge past it.
+      Discharge     Discharge to Maximize Export. Empties actively down to the
+                    working limit once grid export shows the roof carries the
+                    house alone.
+
+    Two levels above the inverter's backup reserve steer all of this. The
+    reserve offset marks where the battery counts as empty, a hair above the
+    reserve it only approaches asymptotically. The working reserve sets the
+    working limit, and the span between the two is energy kept for the house.
+
+    The limit means something different in each operating mode, on purpose. In
+    "peak only" the refill stops there, so the battery cycles between the two
+    levels and always has something left for a load peak. In "morning
+    discharge" the export to the grid stops there, and the last stretch down to
+    the backup reserve is left to the house instead of being sold — same room
+    for the midday peak in the end, but that energy displaces grid import
+    rather than earning a feed-in tariff.
 
     The target mode is compared against the inverter read-back every run, so a
     command timeout expiry or a manual change is corrected automatically. To
@@ -22,8 +43,10 @@ blueprint:
     once and the inverter is then left alone.
 
     Two operating modes: "morning discharge" runs the full sequence and roughly
-    doubles daily battery throughput; "peak only" blocks the recharge without
-    ever discharging and costs no extra throughput.
+    doubles daily battery throughput; "peak only" never exports and costs
+    extra throughput only when conditions change often enough to swing the
+    state of charge across both working levels, which needs a deficit and a
+    surplus in the same morning.
 
     With a fixed tariff this is close to a wash financially — the benefit is
     grid-friendly, not monetary.
@@ -111,31 +134,13 @@ blueprint:
         backup_reserve_number:
           name: Backup Reserve
           description: >
-            Read-only for this blueprint. The discharge mode is only selected
-            while the state of charge is above this plus the offset below,
-            which is what stops the discharge — no separate safety net is
-            needed.
+            Read-only for this blueprint, and the anchor for both working
+            levels below. It is also the floor the inverter enforces on its
+            own, which is why no separate safety net is needed: no control
+            mode written here can discharge past it.
           selector:
             entity:
               domain: number
-        discharge_limit_number:
-          name: Discharge Limit
-          selector:
-            entity:
-              domain: number
-        discharge_limit_watts:
-          name: Discharge Power
-          description: >
-            Written when the discharge mode starts. Lower values stretch the
-            discharge over more hours, at the risk of not reaching the backup
-            reserve before the peak.
-          default: 5000
-          selector:
-            number:
-              min: 0
-              max: 20000
-              unit_of_measurement: W
-              mode: box
         command_self_consumption_option:
           name: Option Label — Maximize Self Consumption
           description: >
@@ -169,16 +174,43 @@ blueprint:
             entity:
               domain: sensor
               device_class: battery
+        working_reserve:
+          name: Working Reserve
+          description: >
+            How far above the inverter's backup reserve the working limit sits.
+            The span between the two is the energy the controller keeps for the
+            house and never exports.
+
+            The limit it defines carries a different job in each operating
+            mode. In "peak only" it is where the refill from surplus stops. In
+            "morning discharge" it is where the export to the grid stops, so
+            the last stretch down to the backup reserve is left to the house
+            instead of being sold.
+
+            Larger values leave more headroom for a load peak and switch the
+            command mode less often, at the cost of parking that much energy in
+            the battery through the window that is meant to stay empty.
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 50
+              unit_of_measurement: "%"
+              mode: box
         soc_release_offset:
           name: Reserve Offset
           description: >
-            How far above the backup reserve the discharge is considered
-            finished. A small offset avoids waiting on the last fraction of a
-            percent, which the inverter approaches slowly.
+            How far above the backup reserve counts as empty. The battery only
+            approaches the backup reserve asymptotically, so a threshold set
+            exactly on it would never be crossed and the refill in "peak only"
+            would never start.
+
+            Keep it well below the working reserve — the span between the two
+            is the hysteresis that stops the command mode from flapping.
           default: 2
           selector:
             number:
-              min: 0
+              min: 1
               max: 20
               unit_of_measurement: "%"
               mode: box
@@ -359,6 +391,7 @@ trigger_variables:
   t_soc_entity: !input soc_sensor
   t_reserve_entity: !input backup_reserve_number
   t_release_offset: !input soc_release_offset
+  t_working_reserve: !input working_reserve
 
 variables:
   mode_entity: !input mode_select
@@ -379,6 +412,7 @@ variables:
   soc_entity: !input soc_sensor
   reserve_entity: !input backup_reserve_number
   release_offset: !input soc_release_offset
+  working_reserve: !input working_reserve
   remaining_entity: !input remaining_today_sensor
   grid_entity: !input grid_delivery_sensor
   grid_threshold: !input grid_delivery_threshold
@@ -390,7 +424,10 @@ variables:
 
   operating_mode: "{{ states(mode_entity) }}"
   soc: "{{ states(soc_entity) | float(0) }}"
-  empty_level: "{{ states(reserve_entity) | float(10) + (release_offset | float(0)) }}"
+  # Both working levels are anchored on the inverter's own backup reserve, the
+  # one floor no control mode can discharge past.
+  working_floor: "{{ states(reserve_entity) | float(10) + (release_offset | float(0)) }}"
+  working_limit: "{{ [states(reserve_entity) | float(10) + (working_reserve | float(10)), (working_floor | float(0)) + (release_offset | float(0))] | max }}"
   sun_up: "{{ is_state('sun.sun', 'above_horizon') }}"
 
   actual_mode: "{{ states(command_mode_entity) }}"
@@ -426,22 +463,52 @@ variables:
   # sensor's input description.
   forecast_covers_today: "{{ (optimal_ts | float(0)) >= (today_start_ts | float(0)) and (optimal_ts | float(0)) > 0 }}"
 
-  # Stops at the reserve rather than at a grid threshold: while discharging,
-  # grid delivery is inflated by the battery itself. The state of charge only
-  # falls under a discharge-only mode, so this gate cannot oscillate.
-  should_discharge: "{{ operating_mode == mode_discharge and soc > empty_level and states(grid_entity) | float(0) > (grid_threshold | float(0)) }}"
+  released_now: >-
+    {{ operating_mode == mode_off
+       or not sun_up
+       or is_sundown
+       or peak_released
+       or not forecast_covers_today }}
+
+  # Peak only. The two working levels are separate thresholds, so crossing
+  # either one cannot flip the command mode back and forth — traversing the
+  # span between them costs real energy first. Between them the read-back is
+  # the latch, which is why no phase is stored anywhere: self consumption only
+  # charges and minimize-import only discharges, so either one resolves on its
+  # own. A read-back showing anything else, such as an export left over from a
+  # mid-morning change of operating mode, is corrected to the restricting mode.
+  peak_only_target: >-
+    {{ label_released
+       if soc <= (working_floor | float(0))
+       else (label_no_recharge
+             if soc >= (working_limit | float(0))
+             else (actual_mode
+                   if actual_mode in [label_released, label_no_recharge]
+                   else label_no_recharge)) }}
+
+  # Morning discharge. One threshold rather than two, and safe as one: nothing
+  # in this branch charges, so the state of charge only ever crosses it
+  # downwards and the export cannot restart. Below the working limit the rest
+  # of the way down to the backup reserve is left to the house.
+  #
+  # Grid delivery is inflated by the battery itself while exporting, so it
+  # stays well clear of the threshold and a passing cloud does not interrupt
+  # the export.
+  discharge_target: >-
+    {{ label_discharge
+       if (soc > (working_limit | float(0))
+           and states(grid_entity) | float(0) > (grid_threshold | float(0)))
+       else label_no_recharge }}
 
   # A single {{ }} expression on purpose: an {% if %} block renders surrounding
   # newlines and indentation into the result, which would break every label
   # comparison unless Home Assistant happens to strip it.
   desired_mode: >-
     {{ label_released
-       if (operating_mode == mode_off
-           or not sun_up
-           or is_sundown
-           or peak_released
-           or not forecast_covers_today)
-       else (label_discharge if should_discharge else label_no_recharge) }}
+       if released_now
+       else (discharge_target
+             if operating_mode == mode_discharge
+             else peak_only_target) }}
 
   # Guarded on the entity EXISTING, not on its state being known: variables are
   # rendered before any action guard runs, and states[...] returns none for a
@@ -470,21 +537,30 @@ triggers:
     entity_id: !input grid_delivery_sensor
     above: !input grid_delivery_threshold
     for: !input grid_stabilize_time
-  - id: soc_reserve_reached
+  - id: soc_working_floor
     alias: >
-      Fires once when the state of charge crosses down to the reserve, which
-      is what ends the discharge. Deliberately a template trigger, not a plain
+      The state of charge has reached the point counted as empty, which starts
+      the refill in "peak only". Deliberately a template trigger, not a plain
       state trigger on the sensor: while charging at full power the state of
       charge advances about a percent a minute, so an unfiltered state trigger
       produced a run every minute all afternoon. A template trigger fires only
       on the false-to-true edge, so this is one run at the crossing.
 
-      The threshold has to be built from two inputs (the reserve entity plus
-      the offset), which a numeric_state trigger cannot express.
+      The threshold is built from an entity plus an input, which a
+      numeric_state trigger cannot express.
     trigger: template
     value_template: >
       {{ states(t_soc_entity) | float(100)
          <= states(t_reserve_entity) | float(10) + (t_release_offset | float(0)) }}
+  - id: soc_working_limit
+    alias: >
+      The working limit is reached: the refill in "peak only" is finished, and
+      in "morning discharge" the export to the grid ends here.
+    trigger: template
+    value_template: >
+      {{ states(t_soc_entity) | float(0)
+         >= [states(t_reserve_entity) | float(10) + (t_working_reserve | float(10)),
+             states(t_reserve_entity) | float(10) + 2 * (t_release_offset | float(0))] | max }}
   - id: peak
     alias: Optimal charge start reached — contains now(), so it re-renders every minute
     trigger: template
@@ -674,16 +750,6 @@ actions:
           entity_id: !input command_timeout_number
         data:
           value: "{{ watchdog_seconds }}"
-
-  - alias: Set the discharge power before commanding the discharge
-    if:
-      - "{{ desired_mode == label_discharge }}"
-    then:
-      - action: number.set_value
-        target:
-          entity_id: !input discharge_limit_number
-        data:
-          value: !input discharge_limit_watts
 
   - alias: Write the control mode
     action: select.select_option
