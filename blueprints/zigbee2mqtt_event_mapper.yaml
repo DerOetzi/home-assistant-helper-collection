@@ -71,6 +71,20 @@ blueprint:
       selector:
         action:
 
+    event_arrow_left_release:
+      name: Event "arrow_left_release" Actions
+      description: Actions to execute when device sends "arrow_left_release" event
+      default: []
+      selector:
+        action:
+
+    event_arrow_right_release:
+      name: Event "arrow_right_release" Actions
+      description: Actions to execute when device sends "arrow_right_release" event
+      default: []
+      selector:
+        action:
+
     event_brightness_move_up:
       name: Event "brightness_move_up" Actions
       description: Actions to execute when device sends "brightness_move_up" event
@@ -170,6 +184,16 @@ action:
           - condition: template
             value_template: "{{ trigger.to_state.attributes.event_type == 'arrow_right_hold' }}"
         sequence: !input event_arrow_right_hold
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.attributes.event_type == 'arrow_left_release' }}"
+        sequence: !input event_arrow_left_release
+
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.attributes.event_type == 'arrow_right_release' }}"
+        sequence: !input event_arrow_right_release
 
       - conditions:
           - condition: template
