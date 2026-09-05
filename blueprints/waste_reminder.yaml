@@ -1,28 +1,50 @@
 blueprint:
   name: Waste Reminder
   description: >
-    Sends a daily reminder notification when the next waste collection
-    is today or tomorrow.
+    Reminds about the next waste collection and keeps reminding until someone
+    confirms that the bins are out.
 
-    At the configured time the automation reads the days remaining until
-    pickup and the waste types from two sensors. If pickup is within one day,
-    it routes a formatted notification via the Notify Dispatcher script.
+    At the configured time the automation reads the days remaining until pickup
+    and the waste types from two sensors. If pickup is today or tomorrow, a
+    formatted notification is routed via the Notify Dispatcher script and then
+    repeated at the configured interval until it is confirmed.
 
     Waste types are parsed from either a JSON array string (['Type1', 'Type2'])
     or a comma-separated string (Type1, Type2). The message uses singular or
     plural phrasing depending on the number of types.
 
-    NOTIFICATION ROUTING: Uses the Notify Dispatcher script (reminderAll type)
-    – broadcasts to all configured persons regardless of presence.
+    Hint Text: An optional input_text helper always mirrors the current
+    situation – the reminder message while pickup is today or tomorrow, an
+    empty string otherwise. It is kept up to date whenever the source sensor
+    changes, not just at the reminder time, so a wall display can show it
+    around the clock. It is not cleared by a confirmation.
+
+    Reminder Status: A second optional input_text helper holds the message only
+    while the reminder loop is running, and is cleared as soon as the reminder
+    is confirmed. Use it to drive a notification that should disappear once the
+    bins are out.
+
+    CANCEL: The reminder loop can be stopped by tapping "Erinnerung beenden" in
+    the push notification (mobile app), by pressing the optional Cancel Button
+    (input_button helper, e.g. on a dashboard or a wall display), or by scanning
+    one of the optional Cancel Tags – NFC tags stuck to the bins themselves.
+    Any single tag ends the loop for all bins.
+
+    Reminders start again at the next reminder time while a pickup is due.
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script
+    (reminderHomeOrFirstAll type – notifies only persons currently home;
+    broadcasts once to all if nobody is home at the first occurrence, then
+    suppresses until someone returns).
   domain: automation
   author: deroetzi
   homeassistant:
-    min_version: 2024.6.0
+    min_version: 2024.10.0
   input:
     reminder_time:
       name: Reminder Time
       description: Daily time at which the check is performed.
-      default: "18:00:00"
+      default: "17:00:00"
       selector:
         time: {}
     pickup_days_sensor:
@@ -43,6 +65,74 @@ blueprint:
       selector:
         entity:
           domain: sensor
+    reminder_interval:
+      name: Reminder Interval (minutes)
+      description: >
+        How often to repeat the reminder until it is confirmed.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 480
+          step: 5
+          unit_of_measurement: min
+          mode: box
+    hint_text:
+      name: Hint Text (optional)
+      description: >
+        input_text helper that always mirrors the current situation: the
+        reminder message while pickup is today or tomorrow, an empty string
+        otherwise. Not cleared by a confirmation. Leave empty to disable.
+      default: {}
+      selector:
+        entity:
+          domain: input_text
+          multiple: false
+    reminder_status:
+      name: Reminder Status (optional)
+      description: >
+        input_text helper that holds the message only while the reminder loop
+        is running and is cleared on confirmation. Leave empty to disable.
+      default: {}
+      selector:
+        entity:
+          domain: input_text
+          multiple: false
+    cancel_action_id:
+      name: Cancel Action ID
+      description: >
+        Unique identifier for the "Erinnerung beenden" action button in
+        reminder push notifications. Must be unique per blueprint instance.
+
+        The cancel can also be triggered from developer tools by firing
+        event_type: mobile_app_notification_action with event_data.action set
+        to this value.
+      default: WASTE_REMINDER_CANCEL
+      selector:
+        text: {}
+    cancel_button:
+      name: Cancel Button (optional)
+      description: >
+        input_button helper that stops the reminder loop when pressed, e.g. a
+        "Rausgebracht" button on a dashboard or a wall display. Does the same
+        as tapping "Erinnerung beenden" in the push notification.
+        Leave empty to disable.
+      default: {}
+      selector:
+        entity:
+          domain: input_button
+          multiple: false
+    cancel_tags:
+      name: Cancel Tags (optional)
+      description: >
+        NFC tags that stop the reminder loop when scanned, e.g. one tag stuck
+        to each bin. Scanning any single tag ends the loop for all bins.
+        Leave empty to disable.
+      default: []
+      selector:
+        entity:
+          domain: tag
+          multiple: true
     notify_dispatcher:
       name: Notify Dispatcher Script
       description: The Notify Dispatcher script instance used for routing.
@@ -51,50 +141,181 @@ blueprint:
           domain: script
           multiple: false
 
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/waste_reminder.yaml
+
+mode: restart
+max_exceeded: silent
+
 variables:
   pickup_days_sensor: !input pickup_days_sensor
   waste_types_sensor: !input waste_types_sensor
+  hint_text: !input hint_text
+  reminder_status: !input reminder_status
+  reminder_interval: !input reminder_interval
 
-trigger:
-  - platform: time
+triggers:
+  - id: reminder
+    alias: Daily reminder time
+    trigger: time
     at: !input reminder_time
 
-condition:
-  - alias: Pickup today or tomorrow
-    condition: template
-    value_template: >
-      {% set days = states(pickup_days_sensor) | int(-1) %}
-      {{ days >= 0 and days <= 1 }}
+  - id: source_changed
+    alias: Pickup countdown changed
+    trigger: state
+    entity_id: !input pickup_days_sensor
+    not_to:
+      - unknown
+      - unavailable
 
-action:
-  - variables:
+  - id: ha_start
+    trigger: homeassistant
+    event: start
+
+  - id: cancelled
+    alias: Cancelled via mobile action
+    trigger: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: !input cancel_action_id
+
+  - id: button_pressed
+    alias: Cancel button pressed
+    trigger: state
+    entity_id: !input cancel_button
+
+  - id: tag_scanned
+    alias: Tag scanned at a bin
+    trigger: state
+    entity_id: !input cancel_tags
+    not_from:
+      - unknown
+      - unavailable
+
+actions:
+  - alias: Work out whether a pickup is due and how to phrase it
+    variables:
+      pickup_days: "{{ states(pickup_days_sensor) | int(-1) }}"
+      due: "{{ states(pickup_days_sensor) | int(-1) in [0, 1] }}"
       notification_message: >
         {% set s = states(waste_types_sensor) | trim %}
         {% if s.startswith('[') %}
           {% set types = s | replace("'", '"') | from_json %}
         {% else %}
-          {% set types = s.split(',') | map('trim') | list %}
+          {% set types = s.split(',') | map('trim') | reject('eq', '') | list %}
         {% endif %}
-        {% set days = states(pickup_days_sensor) | int %}
-        {% set when = 'heute' if days == 0 else 'morgen' %}
-        {% if types | length <= 1 %}
-          {% set waste = types[0] if types | length == 1 else 'Müll' %}
-          {{ waste }} wird {{ when }} abgeholt.
+        {% set when = 'heute' if pickup_days == 0 else 'morgen' %}
+        {% if types | length > 1 %}
+          {{ types[:-1] | join(', ') }} und {{ types[-1] }} werden {{ when }} abgeholt.
+        {% elif types | length == 1 %}
+          {{ types[0] }} wird {{ when }} abgeholt.
         {% else %}
-          {% set waste = types[:-1] | join(', ') + ' und ' + types[-1] %}
-          {{ waste }} werden {{ when }} abgeholt.
+          Müll wird {{ when }} abgeholt.
         {% endif %}
 
-  - alias: Send notification via Notify Dispatcher
-    action: script.turn_on
-    target:
-      entity_id: !input notify_dispatcher
-    data:
-      variables:
-        notify_type: reminderAll
-        title: Müllabfuhr
-        message: "{{ notification_message }}"
-        reminder_count: 0
+  - alias: Stop if the user confirmed that the bins are out
+    if: >
+      {{ trigger.id == 'cancelled'
+         or (trigger.id in ['button_pressed', 'tag_scanned']
+             and trigger.from_state is not none) }}
+    then:
+      - alias: Clear reminder status
+        if: "{{ reminder_status != {} }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: !input reminder_status
+            data:
+              value: ""
+      - stop: "Reminder confirmed by user"
 
-mode: single
-max_exceeded: silent
+  - alias: Keep the persistent hint in sync
+    if: "{{ hint_text != {} }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: !input hint_text
+        data:
+          value: "{{ notification_message | trim if due else '' }}"
+
+  - alias: Stop when no pickup is due
+    if: "{{ not due }}"
+    then:
+      - alias: Clear reminder status
+        if: "{{ reminder_status != {} }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: !input reminder_status
+            data:
+              value: ""
+      - stop: "No pickup due today or tomorrow"
+
+  - alias: Only start the loop at the reminder time, or resume a running one
+    condition: template
+    value_template: >
+      {{ trigger.id == 'reminder'
+         or (trigger.id in ['ha_start', 'source_changed']
+             and reminder_status != {}
+             and states(reminder_status) not in ['', 'unknown', 'unavailable']) }}
+
+  - alias: Remind repeatedly until confirmed
+    repeat:
+      while:
+        - condition: template
+          value_template: "true"
+      sequence:
+        - alias: Send reminder via Notify Dispatcher
+          action: script.turn_on
+          target:
+            entity_id: !input notify_dispatcher
+          data:
+            variables:
+              notify_type: reminderHomeOrFirstAll
+              title: Müllabfuhr
+              message: "{{ notification_message | trim }}"
+              reminder_count: "{{ repeat.index - 1 }}"
+              extra_data:
+                actions:
+                  - action: !input cancel_action_id
+                    title: Erinnerung beenden
+
+        - alias: Mark the reminder as running
+          if: "{{ repeat.index == 1 and reminder_status != {} }}"
+          then:
+            - action: input_text.set_value
+              target:
+                entity_id: !input reminder_status
+              data:
+                value: "{{ notification_message | trim }}"
+
+        - alias: Wait for a confirmation or the next interval
+          wait_for_trigger:
+            - alias: Cancelled via mobile action
+              trigger: event
+              event_type: mobile_app_notification_action
+              event_data:
+                action: !input cancel_action_id
+            - alias: Cancel button pressed
+              trigger: state
+              entity_id: !input cancel_button
+            - alias: Tag scanned at a bin
+              trigger: state
+              entity_id: !input cancel_tags
+              not_from:
+                - unknown
+                - unavailable
+          timeout:
+            minutes: "{{ reminder_interval }}"
+
+        - alias: Stop the loop once confirmed
+          if: "{{ wait.trigger is not none }}"
+          then:
+            - alias: Clear reminder status
+              if: "{{ reminder_status != {} }}"
+              then:
+                - action: input_text.set_value
+                  target:
+                    entity_id: !input reminder_status
+                  data:
+                    value: ""
+            - stop: "Reminder confirmed by user"
