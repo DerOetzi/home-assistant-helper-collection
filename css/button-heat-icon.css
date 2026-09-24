@@ -4,7 +4,7 @@
     flex: 0 0 auto !important;
 
 
-    --card-mod-icon: if(
+    --uix-icon: if(
         style(--heat-required: on): mdi:fire-circle;
         style(--heat-automation: on): mdi:auto-mode;
         else: mdi:stop-circle-outline;
