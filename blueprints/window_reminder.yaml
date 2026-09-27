@@ -184,16 +184,21 @@ variables:
   active_interval: >
     {{ reminder_interval_heating if is_heating_on else reminder_interval_default }}
 
+# State triggers use to: null to ignore attribute-only changes (e.g. climate
+# current_temperature), which would otherwise restart the loop and undo a cancel.
 trigger:
   - id: window_changed
     platform: state
     entity_id: !input window_sensors
+    to: null
   - id: presence_changed
     platform: state
     entity_id: !input presence_entities
+    to: null
   - id: heating_changed
     platform: state
     entity_id: !input heating_entity
+    to: null
   - id: cancelled
     platform: event
     event_type: mobile_app_notification_action
