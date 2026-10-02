@@ -15,9 +15,11 @@ blueprint:
 
     3. Otherwise → pump stays off.
 
-    Uses `mode: restart`: any change to the special-release flag or the
-    three gate entities immediately re-evaluates and restarts the correct
-    branch, cancelling any in-progress interval cycle.
+    Uses `mode: restart`: any state change of the special-release flag or
+    the three gate entities immediately re-evaluates and restarts the
+    correct branch, cancelling any in-progress interval cycle.
+    Attribute-only changes (e.g. the water heater's current temperature)
+    are ignored.
   domain: automation
   author: deroetzi
   homeassistant:
@@ -131,15 +133,22 @@ blueprint:
 mode: restart
 max_exceeded: silent
 
+# State triggers use to: null to ignore attribute-only changes (e.g. water
+# heater current_temperature), which would otherwise restart the interval
+# cycle with an extra pump pulse and cut the off phase short.
 triggers:
   - trigger: state
     entity_id: !input special_release_entity
+    to: null
   - trigger: state
     entity_id: !input water_heater
+    to: null
   - trigger: state
     entity_id: !input presence_entity
+    to: null
   - trigger: state
     entity_id: !input daymode_entity
+    to: null
 
 actions:
   - choose:
