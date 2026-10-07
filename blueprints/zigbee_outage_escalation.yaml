@@ -1,0 +1,344 @@
+blueprint:
+  name: Zigbee Outage Escalation
+  description: >
+    Detects a Zigbee outage (coordinator/adapter hangs while Zigbee2MQTT keeps
+    running) via a "radio silence" binary sensor and escalates in three stages
+    until the network recovers.
+
+    Stage 1: Request a Zigbee2MQTT restart via MQTT
+    (<base_topic>/bridge/request/restart), send a push notification and show
+    an overlay message on the displays (optional input_text helper).
+
+    Stage 2 (after the stage delay, if still silent): Press a container
+    restart button (e.g. Proxmox VE integration) and send a push notification.
+
+    Stage 3 (after another stage delay, if still silent): TTS announcement on
+    the selected media players with a fixed volume; previous volumes are
+    restored afterwards.
+
+    Recovery: As soon as the silence sensor reports "off" again, the overlay
+    is cleared and a recovery push is sent. All push notifications share one
+    tag, so each message replaces the previous one.
+
+    SILENCE SENSOR: Must report "on" while no Zigbee traffic was seen for a
+    threshold time, ignoring entities that are unavailable/unknown. The stage
+    delay must be longer than that threshold: Zigbee2MQTT republishes cached
+    states on restart, which would otherwise look like a recovery.
+  domain: automation
+  author: deroetzi
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/zigbee_outage_escalation.yaml
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    detection:
+      name: Detection
+      icon: mdi:zigbee
+      input:
+        silence_sensor:
+          name: Silence Sensor
+          description: >
+            Binary sensor that is "on" while the Zigbee network is silent
+            (e.g. a template binary sensor checking last_reported of a few
+            frequently reporting Zigbee entities).
+          selector:
+            entity:
+              domain: binary_sensor
+        confirmation_time:
+          name: Confirmation Time (minutes)
+          description: >
+            The silence sensor must stay "on" this long before the escalation
+            starts. Filters the short "on" phase after a Home Assistant
+            restart, while the MQTT entities are still unavailable/unknown
+            (about 30 s observed).
+          default: 2
+          selector:
+            number:
+              min: 0
+              max: 30
+              step: 1
+              unit_of_measurement: min
+              mode: box
+        z2m_base_topic:
+          name: Zigbee2MQTT Base Topic
+          description: MQTT base topic of the Zigbee2MQTT instance.
+          default: zigbee2mqtt
+          selector:
+            text: {}
+        stage_delay:
+          name: Stage Delay (minutes)
+          description: >
+            Waiting time between escalation stages. Must be longer than the
+            silence threshold of the silence sensor.
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 60
+              step: 1
+              unit_of_measurement: min
+              mode: box
+    notification:
+      name: Notification
+      icon: mdi:cellphone-message
+      input:
+        notify_service:
+          name: Notify Service
+          description: Notify service for push messages, e.g. notify.mobile_app_phone.
+          selector:
+            text: {}
+        notification_tag:
+          name: Notification Tag
+          description: >
+            Tag for the push notifications, so every stage replaces the
+            previous message. Must be unique per blueprint instance.
+          default: zigbee_outage
+          selector:
+            text: {}
+        overlay_helper:
+          name: Display Overlay Helper (optional)
+          description: >
+            input_text helper whose value is shown as overlay on the displays.
+            It is set during the outage and cleared on recovery. Leave empty
+            to disable.
+          default: ""
+          selector:
+            entity:
+              domain: input_text
+    container_restart:
+      name: Stage 2 – Container Restart
+      icon: mdi:restart
+      input:
+        restart_button:
+          name: Container Restart Button (optional)
+          description: >
+            Button that restarts the Zigbee2MQTT container/VM, e.g. from the
+            Proxmox VE integration. Leave empty to only notify in stage 2.
+          default: ""
+          selector:
+            entity:
+              domain: button
+    announcement:
+      name: Stage 3 – Announcement
+      icon: mdi:bullhorn
+      input:
+        tts_engine:
+          name: TTS Engine (optional)
+          description: TTS entity for the announcement. Leave empty to disable.
+          default: ""
+          selector:
+            entity:
+              domain: tts
+        tts_players:
+          name: Media Players
+          description: Media players for the announcement.
+          default: []
+          selector:
+            entity:
+              domain: media_player
+              multiple: true
+        tts_volume:
+          name: Announcement Volume
+          default: 70
+          selector:
+            number:
+              min: 5
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
+        tts_message:
+          name: Announcement Message
+          default: >-
+            Achtung. Das Zigbee-Netz ist ausgefallen. Automatische Neustarts
+            haben nicht geholfen. Bitte den Zigbee-Adapter prüfen.
+          selector:
+            text:
+              multiline: true
+
+mode: single
+max_exceeded: silent
+
+variables:
+  silence_sensor: !input silence_sensor
+  z2m_base_topic: !input z2m_base_topic
+  stage_delay: !input stage_delay
+  notify_service: !input notify_service
+  notification_tag: !input notification_tag
+  overlay_helper: !input overlay_helper
+  restart_button: !input restart_button
+  tts_engine: !input tts_engine
+  tts_players: !input tts_players
+  tts_volume: !input tts_volume
+  tts_message: !input tts_message
+
+triggers:
+  # After a Home Assistant restart the silence sensor restores "off" and flips
+  # to "on" seconds later, because all MQTT entities are unavailable/unknown
+  # until Zigbee2MQTT reports again. The confirmation time filters that phase.
+  - trigger: state
+    entity_id: !input silence_sensor
+    from: "off"
+    to: "on"
+    for:
+      minutes: !input confirmation_time
+
+actions:
+  - repeat:
+      while:
+        - condition: state
+          entity_id: !input silence_sensor
+          state: "on"
+        - condition: template
+          value_template: "{{ repeat.index <= 3 }}"
+      sequence:
+        - choose:
+            - conditions:
+                - condition: template
+                  value_template: "{{ repeat.index == 1 }}"
+              sequence:
+                - action: mqtt.publish
+                  data:
+                    topic: "{{ z2m_base_topic }}/bridge/request/restart"
+                    payload: ""
+                - if:
+                    - condition: template
+                      value_template: "{{ overlay_helper != '' }}"
+                  then:
+                    - action: input_text.set_value
+                      target:
+                        entity_id: "{{ overlay_helper }}"
+                      data:
+                        value: "Zigbee-Ausfall\nNeustart Zigbee2MQTT läuft"
+                - action: "{{ notify_service }}"
+                  data:
+                    title: Zigbee-Ausfall
+                    message: >-
+                      Keine Zigbee-Meldungen mehr. Stufe 1:
+                      Zigbee2MQTT-Neustart per MQTT angefordert.
+                    data:
+                      tag: "{{ notification_tag }}"
+            - conditions:
+                - condition: template
+                  value_template: "{{ repeat.index == 2 }}"
+              sequence:
+                - if:
+                    - condition: template
+                      value_template: "{{ restart_button != '' }}"
+                  then:
+                    - action: button.press
+                      target:
+                        entity_id: "{{ restart_button }}"
+                - if:
+                    - condition: template
+                      value_template: "{{ overlay_helper != '' }}"
+                  then:
+                    - action: input_text.set_value
+                      target:
+                        entity_id: "{{ overlay_helper }}"
+                      data:
+                        value: "Zigbee-Ausfall\nNeustart Zigbee2MQTT-Container"
+                - action: "{{ notify_service }}"
+                  data:
+                    title: Zigbee-Ausfall hält an
+                    message: >-
+                      MQTT-Neustart ohne Erfolg. Stufe 2:
+                      {{ 'Container wird neu gestartet.' if restart_button != ''
+                      else 'Kein Container-Neustart konfiguriert.' }}
+                    data:
+                      tag: "{{ notification_tag }}"
+          default:
+            - if:
+                - condition: template
+                  value_template: "{{ overlay_helper != '' }}"
+              then:
+                - action: input_text.set_value
+                  target:
+                    entity_id: "{{ overlay_helper }}"
+                  data:
+                    value: "Zigbee-Ausfall\nManueller Eingriff nötig"
+            - action: "{{ notify_service }}"
+              data:
+                title: Zigbee-Ausfall nicht behoben
+                message: >-
+                  Automatische Neustarts ohne Erfolg. Stufe 3:
+                  Sprachdurchsage. Zigbee-Adapter prüfen.
+                data:
+                  tag: "{{ notification_tag }}"
+            - if:
+                - condition: template
+                  value_template: "{{ tts_engine != '' and tts_players | count > 0 }}"
+              then:
+                - variables:
+                    previous_volumes: >-
+                      {%- set ns = namespace(v={}) -%}
+                      {%- for p in tts_players -%}
+                        {%- set ns.v = dict(ns.v, **{p: state_attr(p, 'volume_level')}) -%}
+                      {%- endfor -%}
+                      {{ ns.v }}
+                - action: media_player.volume_set
+                  target:
+                    entity_id: "{{ tts_players }}"
+                  data:
+                    volume_level: "{{ tts_volume / 100 }}"
+                  continue_on_error: true
+                - action: tts.speak
+                  target:
+                    entity_id: "{{ tts_engine }}"
+                  data:
+                    media_player_entity_id: "{{ tts_players }}"
+                    message: "{{ tts_message }}"
+                    cache: true
+                  continue_on_error: true
+                - delay:
+                    seconds: 20
+                - repeat:
+                    for_each: "{{ tts_players }}"
+                    sequence:
+                      - if:
+                          - condition: template
+                            value_template: "{{ previous_volumes[repeat.item] is number }}"
+                        then:
+                          - action: media_player.volume_set
+                            target:
+                              entity_id: "{{ repeat.item }}"
+                            data:
+                              volume_level: "{{ previous_volumes[repeat.item] }}"
+                            continue_on_error: true
+        # Fixed delay instead of wait_for_trigger: cached states republished by
+        # Zigbee2MQTT on restart are older than the silence threshold by then
+        # and cannot fake a recovery.
+        - delay:
+            minutes: "{{ stage_delay }}"
+
+  - if:
+      - condition: state
+        entity_id: !input silence_sensor
+        state: "on"
+    then:
+      - wait_for_trigger:
+          - trigger: state
+            entity_id: !input silence_sensor
+            to: "off"
+        timeout:
+          hours: 12
+        continue_on_timeout: false
+
+  - if:
+      - condition: template
+        value_template: "{{ overlay_helper != '' }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: "{{ overlay_helper }}"
+        data:
+          value: ""
+  - action: "{{ notify_service }}"
+    data:
+      title: Zigbee wieder online
+      message: >-
+        Zigbee-Netz meldet sich wieder (Ausfall erkannt
+        {{ as_local(trigger.to_state.last_changed).strftime('%H:%M') }}, Dauer
+        ca. {{ ((now() - trigger.to_state.last_changed).total_seconds() / 60)
+        | round(0) | int }} min).
+      data:
+        tag: "{{ notification_tag }}"
