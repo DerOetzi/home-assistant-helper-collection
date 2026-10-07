@@ -9,6 +9,10 @@ blueprint:
     triggers ("on"). The notification repeats at the configured interval as
     long as the sensor remains active.
 
+    Announcement (optional): With a TTS engine and media players configured,
+    every alert is also spoken on the players with a fixed volume; previous
+    volumes are restored afterwards.
+
     Acknowledge: Tapping the "Alarm quittieren" action in the push notification
     stops further repeats for the current event. Notifications resume
     automatically if the sensor triggers again after having cleared.
@@ -82,36 +86,94 @@ blueprint:
         entity:
           domain: script
           multiple: false
+    announcement:
+      name: Announcement
+      icon: mdi:bullhorn
+      collapsed: true
+      input:
+        tts_engine:
+          name: TTS Engine (optional)
+          description: >
+            TTS entity for the announcement. Leave empty to disable. The
+            announcement is repeated together with every notification.
+          default: ""
+          selector:
+            entity:
+              domain: tts
+        tts_players:
+          name: Media Players
+          description: Media players for the announcement.
+          default: []
+          selector:
+            entity:
+              domain: media_player
+              multiple: true
+        tts_volume:
+          name: Announcement Volume
+          default: 70
+          selector:
+            number:
+              min: 5
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
+        tts_message:
+          name: Announcement Message (optional)
+          description: >
+            Spoken text. Leave empty to speak the notification title and
+            message.
+          default: ""
+          selector:
+            text:
+              multiline: true
+        tts_duration:
+          name: Announcement Duration (seconds)
+          description: >
+            Time to let the announcement play before the previous volumes are
+            restored.
+          default: 20
+          selector:
+            number:
+              min: 5
+              max: 120
+              step: 5
+              unit_of_measurement: s
+              mode: box
 
   source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/alarm_notifier.yaml
 
+# The acknowledge event is deliberately not a trigger: with mode restart it
+# would abort a running announcement before the volumes are restored. The
+# wait_for_trigger steps inside the loop catch it instead.
 mode: restart
 max_exceeded: silent
 
 variables:
   alarm_sensors: !input alarm_sensors
+  alarm_title: !input alarm_title
+  alarm_message: !input alarm_message
   repeat_interval: !input repeat_interval
+  tts_engine: !input tts_engine
+  tts_players: !input tts_players
+  tts_volume: !input tts_volume
+  tts_message_input: !input tts_message
+  tts_message: >-
+    {{ tts_message_input if tts_message_input | trim != ''
+       else alarm_title ~ '. ' ~ alarm_message }}
+  tts_duration: !input tts_duration
+  tts_enabled: "{{ tts_engine != '' and tts_players | count > 0 }}"
 
 trigger:
   - id: sensor_triggered
     platform: state
     entity_id: !input alarm_sensors
     to: "on"
-  - id: cancelled
-    platform: event
-    event_type: mobile_app_notification_action
-    event_data:
-      action: !input cancel_action_id
   - id: ha_start
     platform: homeassistant
     event: start
 
 action:
-  - alias: Stop if acknowledged by user
-    if: "{{ trigger.id == 'cancelled' }}"
-    then:
-      - stop: "Alarm acknowledged by user"
-
   - alias: Check if alarm is still active
     condition: template
     value_template: >
@@ -127,6 +189,9 @@ action:
              | selectattr('state', '==', 'on')
              | list | count > 0 }}
       sequence:
+        - variables:
+            cycle_start: "{{ now().timestamp() }}"
+
         - alias: Send alert to all persons
           action: script.turn_on
           target:
@@ -134,13 +199,64 @@ action:
           data:
             variables:
               notify_type: alert
-              title: !input alarm_title
-              message: !input alarm_message
+              title: "{{ alarm_title }}"
+              message: "{{ alarm_message }}"
               reminder_count: "{{ repeat.index - 1 }}"
               extra_data:
                 actions:
                   - action: !input cancel_action_id
                     title: Alarm quittieren
+
+        - alias: Announce on media players
+          if: "{{ tts_enabled }}"
+          then:
+            - variables:
+                previous_volumes: >-
+                  {%- set ns = namespace(v={}) -%}
+                  {%- for p in tts_players -%}
+                    {%- set ns.v = dict(ns.v, **{p: state_attr(p, 'volume_level')}) -%}
+                  {%- endfor -%}
+                  {{ ns.v }}
+            - action: media_player.volume_set
+              target:
+                entity_id: "{{ tts_players }}"
+              data:
+                volume_level: "{{ tts_volume / 100 }}"
+              continue_on_error: true
+            - action: tts.speak
+              target:
+                entity_id: "{{ tts_engine }}"
+              data:
+                media_player_entity_id: "{{ tts_players }}"
+                message: "{{ tts_message }}"
+                cache: true
+              continue_on_error: true
+            - alias: Let the announcement play, but keep listening for acknowledge
+              wait_for_trigger:
+                - platform: event
+                  event_type: mobile_app_notification_action
+                  event_data:
+                    action: !input cancel_action_id
+              timeout:
+                seconds: "{{ tts_duration }}"
+            - variables:
+                acknowledged_during_tts: "{{ wait.trigger is not none }}"
+            - repeat:
+                for_each: "{{ tts_players }}"
+                sequence:
+                  - if:
+                      - condition: template
+                        value_template: "{{ previous_volumes[repeat.item] is number }}"
+                    then:
+                      - action: media_player.volume_set
+                        target:
+                          entity_id: "{{ repeat.item }}"
+                        data:
+                          volume_level: "{{ previous_volumes[repeat.item] }}"
+                        continue_on_error: true
+            - if: "{{ acknowledged_during_tts }}"
+              then:
+                - stop: "Alarm acknowledged by user"
 
         - alias: Stop if repeat is disabled
           if: "{{ repeat_interval | int(0) == 0 }}"
@@ -160,8 +276,12 @@ action:
               event_type: mobile_app_notification_action
               event_data:
                 action: !input cancel_action_id
+          # The announcement counts into the interval, so the rhythm stays
+          # at repeat_interval.
           timeout:
-            minutes: "{{ repeat_interval }}"
+            seconds: >-
+              {{ [repeat_interval * 60
+                  - (now().timestamp() - cycle_start | float), 1] | max | int }}
 
         - alias: Stop loop if alarm cleared or acknowledged
           if: "{{ wait.trigger is not none }}"
