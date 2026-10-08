@@ -15,10 +15,26 @@ blueprint:
     `comparison: below` for an early/night slot (heat now because there
     won't be much PV later), and once with `comparison: above` for a midday
     slot (heat now while there is PV surplus).
+
+    Retries: if switching the mode fails (e.g. the manufacturer cloud is
+    unreachable), the start is retried every 15 minutes within the retry
+    window. A start is skipped while the outlet temperature is already close
+    to the disinfection temperature (outlet threshold minus 3 K), so a cycle
+    that just finished does not run again.
+
+    Verification (optional): after a successful start the automation waits
+    until the outlet sensor (or the water heater's current_temperature) has
+    reached the outlet threshold and, if a circulation return sensor is set,
+    the return has reached the return threshold and stayed there for the
+    hold time. Keeping the circulation pump running during the cycle is up
+    to the circulation controller (e.g. via the special release flag).
+
+    Notification (optional): a push message is sent when the cycle could not
+    be started within the retry window, or when the verification fails.
   domain: automation
   author: deroetzi
   homeassistant:
-    min_version: 2024.10.0
+    min_version: 2025.4.0
   input:
     actor:
       name: Water Heater
@@ -65,6 +81,19 @@ blueprint:
                   value: sat
                 - label: Sunday
                   value: sun
+        retry_window:
+          name: Retry Window
+          description: >
+            Minutes after the trigger time in which a failed start is retried
+            every 15 minutes. When the window has passed without a start, a
+            notification is sent.
+          default: 120
+          selector:
+            number:
+              min: 15
+              max: 600
+              unit_of_measurement: min
+              mode: box
     forecast_gate:
       name: Forecast Gate
       icon: mdi:weather-sunny
@@ -95,19 +124,127 @@ blueprint:
                   value: above
                 - label: Below threshold
                   value: below
+    verification:
+      name: Verification
+      icon: mdi:thermometer-check
+      collapsed: true
+      input:
+        outlet_sensor:
+          name: Outlet Temperature Sensor (optional)
+          description: >
+            Hot water outlet or tank temperature. Leave empty to use the water
+            heater's current_temperature attribute.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+        outlet_threshold:
+          name: Outlet Threshold
+          default: 60
+          selector:
+            number:
+              min: 50
+              max: 80
+              unit_of_measurement: °C
+              mode: box
+        return_sensor:
+          name: Circulation Return Sensor (optional)
+          description: Leave empty to skip the circulation check.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+        return_threshold:
+          name: Return Threshold
+          default: 55
+          selector:
+            number:
+              min: 45
+              max: 75
+              unit_of_measurement: °C
+              mode: box
+        hold_time:
+          name: Hold Time
+          description: How long the return has to stay above its threshold.
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+              mode: box
+        verify_timeout:
+          name: Verification Timeout
+          description: Maximum time from the start until both thresholds are reached.
+          default: 240
+          selector:
+            number:
+              min: 30
+              max: 720
+              unit_of_measurement: min
+              mode: box
+    notification:
+      name: Notification
+      icon: mdi:cellphone-message
+      collapsed: true
+      input:
+        notify_service:
+          name: Notify Service (optional)
+          description: >
+            Notify service for push messages, e.g. notify.mobile_app_phone.
+            Leave empty to disable notifications.
+          default: ""
+          selector:
+            text: {}
 
   source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/legionella_protection_schedule.yaml
 
+# single: a running cycle (verification can take hours) silently blocks the
+# retry and deadline triggers, so a started cycle is never started twice.
 mode: single
+max_exceeded: silent
+
+trigger_variables:
+  trigger_time: !input trigger_time
+  weekdays: !input weekday
+  retry_window: !input retry_window
 
 variables:
+  water_heater: !input water_heater
+  performance_mode: !input performance_mode
   comparison: !input comparison
   forecast_sensor: !input forecast_sensor
   threshold: !input threshold
+  outlet_sensor: !input outlet_sensor
+  outlet_threshold: !input outlet_threshold
+  return_sensor: !input return_sensor
+  return_threshold: !input return_threshold
+  hold_time: !input hold_time
+  verify_timeout: !input verify_timeout
+  notify_service: !input notify_service
+  outlet_temp: >-
+    {{ (states(outlet_sensor) if outlet_sensor else
+        state_attr(water_heater, 'current_temperature')) | float(0) }}
+  already_hot: "{{ outlet_temp >= outlet_threshold - 3 }}"
 
 triggers:
-  - trigger: time
+  - id: start
+    trigger: time
     at: !input trigger_time
+  # Every 15 minutes inside the retry window, only on the scheduled weekdays
+  # (keeps the trace list free of runs that would fail their conditions).
+  - id: retry
+    trigger: template
+    value_template: >-
+      {% set start = today_at(trigger_time) %}
+      {{ now().strftime('%a') | lower in weekdays
+         and start < now() <= start + timedelta(minutes=retry_window)
+         and now().minute % 15 == 0 }}
+  - id: deadline
+    trigger: template
+    value_template: >-
+      {{ now().strftime('%a') | lower in weekdays
+         and now() >= today_at(trigger_time) + timedelta(minutes=retry_window + 5) }}
 
 conditions:
   - condition: time
@@ -123,8 +260,88 @@ conditions:
       {{ val > threshold if comparison == 'above' else val < threshold }}
 
 actions:
-  - action: water_heater.set_operation_mode
-    target:
-      entity_id: !input water_heater
-    data:
-      operation_mode: !input performance_mode
+  - choose:
+      - alias: Deadline passed without a cycle
+        conditions:
+          - condition: trigger
+            id: deadline
+          - condition: template
+            value_template: "{{ not already_hot }}"
+          - condition: template
+            value_template: "{{ notify_service != '' }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: Legionellenschutz ausgefallen
+              message: >-
+                Die Warmwasser-Desinfektion konnte im Zeitfenster nicht
+                gestartet werden (Warmwasser {{ outlet_temp | round(1) }} °C).
+                Bitte von Hand nachholen.
+
+      - alias: Start or retry the cycle
+        conditions:
+          - condition: trigger
+            id:
+              - start
+              - retry
+          - condition: template
+            value_template: "{{ not already_hot }}"
+          - condition: template
+            value_template: "{{ not is_state(water_heater, performance_mode) }}"
+        sequence:
+          # A failing call (e.g. cloud unreachable) ends the run here; the
+          # next retry trigger tries again.
+          - action: water_heater.set_operation_mode
+            target:
+              entity_id: !input water_heater
+            data:
+              operation_mode: !input performance_mode
+          - wait_template: "{{ is_state(water_heater, performance_mode) }}"
+            timeout:
+              minutes: 5
+            continue_on_timeout: false
+
+          - alias: Wait for the outlet temperature
+            wait_template: >-
+              {{ (states(outlet_sensor) if outlet_sensor else
+                  state_attr(water_heater, 'current_temperature')) | float(0)
+                 >= outlet_threshold }}
+            timeout:
+              minutes: "{{ verify_timeout }}"
+          - variables:
+              outlet_ok: "{{ wait.completed }}"
+              return_ok: true
+          - if:
+              - condition: template
+                value_template: "{{ outlet_ok and return_sensor != '' }}"
+            then:
+              - alias: Wait for the circulation return temperature
+                wait_template: "{{ states(return_sensor) | float(0) >= return_threshold }}"
+                timeout:
+                  minutes: "{{ verify_timeout }}"
+              - if:
+                  - condition: template
+                    value_template: "{{ wait.completed }}"
+                then:
+                  - delay:
+                      minutes: "{{ hold_time }}"
+                  - variables:
+                      return_ok: "{{ states(return_sensor) | float(0) >= return_threshold }}"
+                else:
+                  - variables:
+                      return_ok: false
+
+          - if:
+              - condition: template
+                value_template: "{{ not (outlet_ok and return_ok) and notify_service != '' }}"
+            then:
+              - action: "{{ notify_service }}"
+                data:
+                  title: Legionellenschutz unvollständig
+                  message: >-
+                    {% set o = (states(outlet_sensor) if outlet_sensor else
+                        state_attr(water_heater, 'current_temperature')) | float(0) %}
+                    {% if not outlet_ok %}Warmwasser hat {{ outlet_threshold }} °C
+                    nicht erreicht ({{ o | round(1) }} °C).{% else %}Zirkulationsrücklauf
+                    hat {{ return_threshold }} °C nicht {{ hold_time }} min gehalten
+                    ({{ states(return_sensor) | float(0) | round(1) }} °C).{% endif %}
