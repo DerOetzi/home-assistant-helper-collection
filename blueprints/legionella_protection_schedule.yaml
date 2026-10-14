@@ -11,10 +11,26 @@ blueprint:
       prefer solar surplus for the legionella-protection heating cycle when
       available).
 
-    Instantiate this blueprint twice for a night/day pair: once with
-    `comparison: below` for an early/night slot (heat now because there
-    won't be much PV later), and once with `comparison: above` for a midday
-    slot (heat now while there is PV surplus).
+    Fallback slot (optional, recommended): with a fallback time set, a
+    single instance covers the whole week. The cycle starts at the trigger
+    time when the forecast condition holds, otherwise at the later fallback
+    time regardless of the forecast — e.g. 13:00 on PV, else 15:00 (warmest
+    part of the day, and the hot water is used in the evening instead of
+    standing overnight). A forecast that changes during the day can no
+    longer skip the cycle; to rule out a second run as well, set the last
+    start helper. The fallback time has to be later than the trigger time.
+
+    Last start helper (optional, recommended with the fallback slot): an
+    input_datetime (date and time) that receives the time of every
+    successful start. Further starts on the same day are skipped, and no
+    "could not be started" notification is sent. Without it, a second start
+    is only prevented while the outlet is still close to the disinfection
+    temperature (outlet threshold minus 3 K).
+
+    Without a fallback, instantiate this blueprint twice for a night/day
+    pair: once with `comparison: below` for an early/night slot and once
+    with `comparison: above` for a midday slot. Both read the forecast at
+    different times, so a changing forecast can skip both or run both.
 
     Retries: if switching the mode fails (e.g. the manufacturer cloud is
     unreachable), the start is retried every 15 minutes within the retry
@@ -26,8 +42,15 @@ blueprint:
     until the outlet sensor (or the water heater's current_temperature) has
     reached the outlet threshold and, if a circulation return sensor is set,
     the return has reached the return threshold and stayed there for the
-    hold time. Keeping the circulation pump running during the cycle is up
-    to the circulation controller (e.g. via the special release flag).
+    hold time.
+
+    Circulation request (optional): an input_boolean that is switched on
+    after a successful start, so the circulation controller runs the pump
+    continuously. Switching it off once the loop is disinfected is up to the
+    circulation controller (e.g. "Release Continuous Run When Hot" in the
+    thermostatic circulation blueprint). This automation only switches it
+    off when the verification fails, so the pump never stays in continuous
+    mode after a failed cycle.
 
     Notification (optional): a push message is sent when the cycle could not
     be started within the retry window, or when the verification fails.
@@ -84,9 +107,9 @@ blueprint:
         retry_window:
           name: Retry Window
           description: >
-            Minutes after the trigger time in which a failed start is retried
-            every 15 minutes. When the window has passed without a start, a
-            notification is sent.
+            Minutes after the trigger time (and after the fallback time, if
+            enabled) in which a failed start is retried every 15 minutes. When
+            the last window has passed without a start, a notification is sent.
           default: 120
           selector:
             number:
@@ -94,6 +117,38 @@ blueprint:
               max: 600
               unit_of_measurement: min
               mode: box
+        fallback_enabled:
+          name: Fallback Slot
+          description: >
+            Start at the fallback time regardless of the forecast when the
+            cycle did not start at the trigger time.
+          default: false
+          selector:
+            boolean: {}
+        fallback_time:
+          name: Fallback Time
+          description: Later than the trigger time. Only used with the fallback slot enabled.
+          default: "15:00:00"
+          selector:
+            time: {}
+        last_start_helper:
+          name: Last Start Helper (optional)
+          description: >
+            input_datetime with date and time. Stores the last successful
+            start; a cycle runs at most once per day. Leave empty to disable.
+          default: ""
+          selector:
+            entity:
+              domain: input_datetime
+        circulation_request:
+          name: Circulation Request (optional)
+          description: >
+            input_boolean switched on after a successful start to request
+            continuous circulation. Leave empty to disable.
+          default: ""
+          selector:
+            entity:
+              domain: input_boolean
     forecast_gate:
       name: Forecast Gate
       icon: mdi:weather-sunny
@@ -208,6 +263,8 @@ trigger_variables:
   trigger_time: !input trigger_time
   weekdays: !input weekday
   retry_window: !input retry_window
+  fallback_enabled: !input fallback_enabled
+  fallback_time: !input fallback_time
 
 variables:
   water_heater: !input water_heater
@@ -226,25 +283,39 @@ variables:
     {{ (states(outlet_sensor) if outlet_sensor else
         state_attr(water_heater, 'current_temperature')) | float(0) }}
   already_hot: "{{ outlet_temp >= outlet_threshold - 3 }}"
+  last_start_helper: !input last_start_helper
+  circulation_request: !input circulation_request
+  started_today: >-
+    {{ last_start_helper != ''
+       and states(last_start_helper)[:10] == now().strftime('%Y-%m-%d') }}
 
 triggers:
   - id: start
     trigger: time
     at: !input trigger_time
-  # Every 15 minutes inside the retry window, only on the scheduled weekdays
+  - id: start
+    trigger: time
+    at: !input fallback_time
+    enabled: !input fallback_enabled
+  # Every 15 minutes inside a retry window, only on the scheduled weekdays
   # (keeps the trace list free of runs that would fail their conditions).
   - id: retry
     trigger: template
     value_template: >-
-      {% set start = today_at(trigger_time) %}
+      {% set p = today_at(trigger_time) %}
+      {% set f = today_at(fallback_time) %}
+      {% set w = timedelta(minutes=retry_window) %}
       {{ now().strftime('%a') | lower in weekdays
-         and start < now() <= start + timedelta(minutes=retry_window)
-         and now().minute % 15 == 0 }}
+         and now().minute % 15 == 0
+         and ((p < now() <= p + w)
+              or (fallback_enabled and f < now() <= f + w)) }}
+  # After the last window: the fallback window if enabled, else the first.
   - id: deadline
     trigger: template
     value_template: >-
+      {% set last = today_at(fallback_time) if fallback_enabled else today_at(trigger_time) %}
       {{ now().strftime('%a') | lower in weekdays
-         and now() >= today_at(trigger_time) + timedelta(minutes=retry_window + 5) }}
+         and now() >= last + timedelta(minutes=retry_window + 5) }}
 
 conditions:
   - condition: time
@@ -254,10 +325,13 @@ conditions:
       - condition: state
         entity_id: !input water_heater
         state: "off"
+  # Forecast gate; from the fallback time on it no longer applies. A cycle
+  # that already ran is caught by started_today / already_hot in the actions.
   - condition: template
     value_template: >-
       {% set val = states(forecast_sensor) | float(0) %}
-      {{ val > threshold if comparison == 'above' else val < threshold }}
+      {{ (val > threshold if comparison == 'above' else val < threshold)
+         or (fallback_enabled and now() >= today_at(fallback_time)) }}
 
 actions:
   - choose:
@@ -266,7 +340,7 @@ actions:
           - condition: trigger
             id: deadline
           - condition: template
-            value_template: "{{ not already_hot }}"
+            value_template: "{{ not already_hot and not started_today }}"
           - condition: template
             value_template: "{{ notify_service != '' }}"
         sequence:
@@ -285,7 +359,7 @@ actions:
               - start
               - retry
           - condition: template
-            value_template: "{{ not already_hot }}"
+            value_template: "{{ not already_hot and not started_today }}"
           - condition: template
             value_template: "{{ not is_state(water_heater, performance_mode) }}"
         sequence:
@@ -300,6 +374,22 @@ actions:
             timeout:
               minutes: 5
             continue_on_timeout: false
+          - if:
+              - condition: template
+                value_template: "{{ last_start_helper != '' }}"
+            then:
+              - action: input_datetime.set_datetime
+                target:
+                  entity_id: "{{ last_start_helper }}"
+                data:
+                  datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+          - if:
+              - condition: template
+                value_template: "{{ circulation_request != '' }}"
+            then:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: "{{ circulation_request }}"
 
           - alias: Wait for the outlet temperature
             wait_template: >-
@@ -331,6 +421,14 @@ actions:
                   - variables:
                       return_ok: false
 
+          - alias: Failed cycle - end the circulation request
+            if:
+              - condition: template
+                value_template: "{{ not (outlet_ok and return_ok) and circulation_request != '' }}"
+            then:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: "{{ circulation_request }}"
           - if:
               - condition: template
                 value_template: "{{ not (outlet_ok and return_ok) and notify_service != '' }}"
