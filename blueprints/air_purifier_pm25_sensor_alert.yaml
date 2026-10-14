@@ -1,0 +1,141 @@
+blueprint:
+  name: Air Purifier PM2.5 Sensor Alert
+  description: >
+    Notifies when the PM2.5 sensor of an air purifier stays implausibly high for
+    a long time while the purifier is running. A running purifier brings real
+    particulate matter in a single room down within minutes; a value that stays
+    above the threshold for the configured duration usually means a dirty
+    optical sensor (dust or a small insect in the measuring chamber), which
+    keeps the purifier stuck at full speed. Less often it means a real
+    persistent source in the room — the message asks to check the room first.
+
+    Short sensor error values (-1, unavailable) restart the waiting time, so an
+    alert is delayed rather than triggered by them. One notification per
+    episode: the trigger only arms again once the value has dropped below the
+    threshold.
+
+    NOTIFICATION ROUTING: Uses the Notify Dispatcher script.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    devices:
+      name: Geräte
+      icon: mdi:air-purifier
+      input:
+        purifier:
+          name: Air Purifier
+          description: >
+            Fan entity of the air purifier. No alert while it is off — a
+            stopped purifier cannot clean the air, so a high value is no sign
+            of a sensor fault.
+          selector:
+            entity:
+              domain: fan
+              multiple: false
+        pm25_sensor:
+          name: PM2.5 Sensor
+          description: The PM2.5 sensor built into the purifier.
+          selector:
+            entity:
+              domain: sensor
+              device_class: pm25
+              multiple: false
+        room_name:
+          name: Room Name
+          description: Inserted into the notification, e.g. "Schlafzimmer".
+          selector:
+            text: {}
+    detection:
+      name: Erkennung
+      icon: mdi:alert-decagram-outline
+      input:
+        pm25_threshold:
+          name: PM2.5 Threshold
+          description: >
+            Values above this count as implausible once they persist. Normal
+            indoor values sit below 20 µg/m³; cooking or a candle peaks briefly
+            above 100 and drops again while the purifier runs.
+          default: 100
+          selector:
+            number:
+              min: 20.0
+              max: 1000.0
+              step: 10.0
+              unit_of_measurement: µg/m³
+              mode: box
+        duration:
+          name: Duration
+          description: How long the value has to stay above the threshold.
+          default: 45
+          selector:
+            number:
+              min: 10.0
+              max: 240.0
+              step: 5.0
+              unit_of_measurement: min
+              mode: box
+    notification:
+      name: Benachrichtigung
+      icon: mdi:bell-outline
+      input:
+        notify_dispatcher:
+          name: Notify Dispatcher Script
+          description: The Notify Dispatcher script instance used for routing.
+          selector:
+            entity:
+              domain: script
+              multiple: false
+        notify_type:
+          name: Notification Type
+          description: Routing type passed to the Notify Dispatcher.
+          default: reminderHomeOrAll
+          selector:
+            select:
+              options:
+                - alert
+                - reminderAll
+                - reminderHomeOrAll
+                - reminderHomeOrFirstAll
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/air_purifier_pm25_sensor_alert.yaml
+
+mode: single
+max_exceeded: silent
+
+variables:
+  pm25_sensor: !input pm25_sensor
+  purifier: !input purifier
+  room_name: !input room_name
+  pm25_threshold: !input pm25_threshold
+  duration: !input duration
+  notify_type: !input notify_type
+
+triggers:
+  - trigger: numeric_state
+    entity_id: !input pm25_sensor
+    above: !input pm25_threshold
+    for:
+      minutes: !input duration
+
+conditions:
+  - condition: state
+    entity_id: !input purifier
+    state: "on"
+
+actions:
+  - alias: Send notification
+    action: script.turn_on
+    target:
+      entity_id: !input notify_dispatcher
+    data:
+      variables:
+        notify_type: "{{ notify_type }}"
+        title: "Luftfilter {{ room_name }}: PM2.5 unplausibel"
+        message: >-
+          PM2.5 seit {{ duration | int }} min über {{ pm25_threshold | int }}
+          µg/m³ (aktuell {{ states(pm25_sensor) }} µg/m³, Lüfter
+          {{ state_attr(purifier, 'percentage') | int(0) }} %). Raum prüfen —
+          ohne erkennbare Quelle Sensor reinigen (Gerät aus, Sensoröffnung
+          aussaugen).
+        reminder_count: 0
