@@ -1,0 +1,501 @@
+blueprint:
+  name: Domestic Hot Water Circulation Control (Thermostatic)
+  description: >
+    Controls a domestic hot water circulation pump by the measured
+    circulation return temperature instead of a fixed on/off interval.
+    For installations without a return sensor use "Domestic Hot Water
+    Circulation Control" (time based) instead.
+
+    Every run re-evaluates the desired pump state from the current values,
+    so there are no long-running delays and a restart never leaves the pump
+    in a wrong state. A template trigger fires only when a switch is due, so
+    the trace list shows pulses, not idle polling. Rules, first match wins:
+
+    1. A continuous-run request entity is "on" (e.g. an input_boolean set by
+       a legionella protection cycle) → pump runs continuously. With the
+       release enabled, the automation switches the request entities off
+       again once the return has held the release temperature for the
+       release time (the whole loop is disinfected).
+
+    2. Water heater in a blocked mode (default "off"), or presence or day
+       mode gate "off" → pump off. With "Draws Override Presence and Day
+       Mode" enabled, a closed presence or day mode gate only suppresses
+       the temperature-based starts: a detected draw still starts a pulse
+       (e.g. a shower late at night), which then ends as in rule 4.
+
+    3. Return sensor unavailable → fallback interval (fixed on/off times).
+
+    4. Pump running → off once the return has reached the stop target or
+       the maximum run time is over. Stop target = outlet temperature minus
+       a delta (hot water has gone round the loop), or a fixed temperature
+       without an outlet sensor.
+
+    5. Pump off for at least the minimum pause → on when the return has
+       dropped below the start threshold (separate values for two peak
+       windows and the rest of the day), or when a hot water draw is
+       detected and the loop is not hot. The start threshold is capped at
+       stop target minus 2 K so a cool tank cannot cause short cycling.
+
+    Draw detection (optional): binary sensors that turn "on" when hot water
+    is drawn, e.g. from a fast drop of a cold water inlet pipe sensor
+    (computed on the sensor device or with a derivative + threshold helper).
+    A raw temperature sensor is deliberately not used here: it would run the
+    automation on every reading and push real pulses out of the traces.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    actor:
+      name: Actor
+      icon: mdi:pump
+      input:
+        pump_switch:
+          name: Circulation Pump Switch
+          selector:
+            entity:
+              domain: switch
+    sensors:
+      name: Sensors
+      icon: mdi:thermometer-water
+      input:
+        return_sensor:
+          name: Circulation Return Temperature
+          description: Pipe sensor on the circulation return, upstream of the pump and some distance from the tank.
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        outlet_sensor:
+          name: Hot Water Outlet Temperature (optional)
+          description: Pipe sensor on the hot water outlet of the tank. Leave empty to stop at a fixed temperature.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        draw_entities:
+          name: Draw Detection (optional)
+          description: Binary sensors that turn "on" when hot water is drawn. Leave empty to disable.
+          default: []
+          selector:
+            entity:
+              domain: binary_sensor
+              multiple: true
+    gates:
+      name: Gates
+      icon: mdi:gate
+      input:
+        continuous_request_entities:
+          name: Continuous Run Request (optional)
+          description: Entities (e.g. input_boolean) that force continuous operation while any of them is "on".
+          default: []
+          selector:
+            entity:
+              multiple: true
+        continuous_release:
+          name: Release Continuous Run When Hot
+          description: >-
+            Switch the continuous-run request entities off once the return has
+            stayed at or above the release temperature for the release time.
+          default: false
+          selector:
+            boolean: {}
+        continuous_release_temperature:
+          name: Release Temperature
+          default: 58
+          selector:
+            number:
+              min: 45
+              max: 75
+              step: 0.5
+              unit_of_measurement: °C
+              mode: box
+        continuous_release_time:
+          name: Release Time
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 120
+              unit_of_measurement: min
+              mode: box
+        water_heater:
+          name: Water Heater
+          selector:
+            entity:
+              domain: water_heater
+        water_heater_blocked_states:
+          name: Water Heater Blocked Modes
+          description: Operation modes in which circulation is not allowed.
+          default:
+            - "off"
+          selector:
+            select:
+              options:
+                - "off"
+              multiple: true
+              custom_value: true
+        presence_entity:
+          name: Presence Entity
+          description: Entity that must be "on" for circulation (e.g. binary_sensor.anwesenheit_oder_heimweg).
+          selector:
+            entity:
+              domain: binary_sensor
+        daymode_entity:
+          name: Day Mode Entity
+          description: Entity that must be "on" for circulation (e.g. binary_sensor.tagmodus).
+          selector:
+            entity:
+              domain: binary_sensor
+        draw_overrides_gates:
+          name: Draws Override Presence and Day Mode
+          description: >-
+            When on, a detected draw starts a pulse even while presence or day
+            mode is "off". A blocked water heater mode still keeps the pump off.
+          default: false
+          selector:
+            boolean: {}
+    thresholds:
+      name: Thresholds
+      icon: mdi:thermometer-lines
+      input:
+        peak1_start:
+          name: Peak Window 1 Start
+          default: "06:00:00"
+          selector:
+            time: {}
+        peak1_end:
+          name: Peak Window 1 End
+          default: "09:30:00"
+          selector:
+            time: {}
+        peak2_start:
+          name: Peak Window 2 Start
+          default: "17:00:00"
+          selector:
+            time: {}
+        peak2_end:
+          name: Peak Window 2 End
+          default: "22:00:00"
+          selector:
+            time: {}
+        peak_start_below:
+          name: Start Below (Peak)
+          description: Start the pump when the return drops below this temperature inside a peak window.
+          default: 40
+          selector:
+            number:
+              min: 20
+              max: 60
+              step: 0.5
+              unit_of_measurement: °C
+              mode: box
+        offpeak_start_below:
+          name: Start Below (Off-Peak)
+          description: Start the pump when the return drops below this temperature outside the peak windows.
+          default: 35
+          selector:
+            number:
+              min: 20
+              max: 60
+              step: 0.5
+              unit_of_measurement: °C
+              mode: box
+        stop_delta:
+          name: Stop Delta Below Outlet
+          description: Stop once the return is within this many kelvin of the outlet temperature.
+          default: 4
+          selector:
+            number:
+              min: 1
+              max: 15
+              step: 0.5
+              unit_of_measurement: K
+              mode: box
+        stop_temperature:
+          name: Stop Temperature (without outlet sensor)
+          description: Fixed stop target used when no outlet sensor is set or it is unavailable.
+          default: 44
+          selector:
+            number:
+              min: 25
+              max: 65
+              step: 0.5
+              unit_of_measurement: °C
+              mode: box
+    timing:
+      name: Timing
+      icon: mdi:timer-outline
+      collapsed: true
+      input:
+        max_run_time:
+          name: Maximum Run Time
+          description: Safety limit for one pulse, in case the stop target is never reached.
+          default: 3
+          selector:
+            number:
+              min: 1
+              max: 30
+              unit_of_measurement: min
+              mode: box
+        min_pause:
+          name: Minimum Pause
+          description: Minimum off time between two pulses.
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+              mode: box
+        fallback_on_duration:
+          name: Fallback On Duration
+          description: Pulse length while the return sensor is unavailable.
+          default: 2
+          selector:
+            number:
+              min: 1
+              max: 30
+              unit_of_measurement: min
+              mode: box
+        fallback_off_duration:
+          name: Fallback Off Duration
+          description: Pause length while the return sensor is unavailable.
+          default: 15
+          selector:
+            number:
+              min: 1
+              max: 120
+              unit_of_measurement: min
+              mode: box
+
+  source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/domestic_hotwater_circulation_thermostatic.yaml
+
+# Every run only switches once and never waits, so restart is safe: a new
+# trigger simply re-evaluates the current state.
+mode: restart
+max_exceeded: silent
+
+trigger_variables:
+  t_pump: !input pump_switch
+  t_return: !input return_sensor
+  t_outlet: !input outlet_sensor
+  t_peaks:
+    - [!input peak1_start, !input peak1_end]
+    - [!input peak2_start, !input peak2_end]
+  t_peak_start: !input peak_start_below
+  t_offpeak_start: !input offpeak_start_below
+  t_stop_delta: !input stop_delta
+  t_stop_temp: !input stop_temperature
+  t_max_run: !input max_run_time
+  t_min_pause: !input min_pause
+  t_fb_on: !input fallback_on_duration
+  t_fb_off: !input fallback_off_duration
+  t_continuous: !input continuous_request_entities
+  t_release_temp: !input continuous_release_temperature
+
+triggers:
+  # True while a switch is due (start, stop, max run time, fallback). Fires
+  # only on the false -> true transition; uses now(), so it is re-rendered
+  # every minute as well as on every change of the entities it reads.
+  # Same rules as the variables below — keep both in sync.
+  - id: due
+    trigger: template
+    value_template: >-
+      {% set p = states[t_pump] %}
+      {% set r = states(t_return) | float(none) %}
+      {% set o = states(t_outlet) | float(none) if t_outlet else none %}
+      {% set target = (o - t_stop_delta) if o is not none else t_stop_temp %}
+      {% set mins = ((now() - p.last_changed).total_seconds() / 60) if p is not none else 0 %}
+      {% set t = now().strftime('%H:%M:%S') %}
+      {% set ns = namespace(peak=false) %}
+      {% for s, e in t_peaks %}
+        {% if (s <= e and s <= t < e) or (s > e and (t >= s or t < e)) %}
+          {% set ns.peak = true %}
+        {% endif %}
+      {% endfor %}
+      {% set start_below = [t_peak_start if ns.peak else t_offpeak_start, target - 2] | min %}
+      {% if p is none or p.state not in ['on', 'off'] %}
+        false
+      {% elif r is none %}
+        {{ (p.state == 'on' and mins >= t_fb_on) or (p.state == 'off' and mins >= t_fb_off) }}
+      {% elif p.state == 'on' %}
+        {{ r >= target or mins >= t_max_run }}
+      {% else %}
+        {{ mins >= t_min_pause and r < start_below }}
+      {% endif %}
+  # Continuous run requested and the return has been hot long enough.
+  # Template + for (not numeric_state) so it also fires when the return was
+  # already hot before the request came in.
+  - id: release
+    trigger: template
+    enabled: !input continuous_release
+    value_template: >-
+      {{ t_continuous | select('is_state', 'on') | list | count > 0
+         and states(t_return) | float(0) >= t_release_temp }}
+    for:
+      minutes: !input continuous_release_time
+  - id: draw
+    trigger: state
+    entity_id: !input draw_entities
+    to: "on"
+  # to: null ignores attribute-only changes (e.g. water heater temperature).
+  - id: gate
+    trigger: state
+    entity_id: !input continuous_request_entities
+    to: null
+  - id: gate
+    trigger: state
+    entity_id: !input water_heater
+    to: null
+  - id: gate
+    trigger: state
+    entity_id: !input presence_entity
+    to: null
+  - id: gate
+    trigger: state
+    entity_id: !input daymode_entity
+    to: null
+  - id: start
+    trigger: homeassistant
+    event: start
+
+variables:
+  pump: !input pump_switch
+  return_sensor: !input return_sensor
+  outlet_sensor: !input outlet_sensor
+  continuous_request_entities: !input continuous_request_entities
+  water_heater: !input water_heater
+  blocked_states: !input water_heater_blocked_states
+  presence_entity: !input presence_entity
+  daymode_entity: !input daymode_entity
+  peak1_start: !input peak1_start
+  peak1_end: !input peak1_end
+  peak2_start: !input peak2_start
+  peak2_end: !input peak2_end
+  peak_start_below: !input peak_start_below
+  offpeak_start_below: !input offpeak_start_below
+  stop_delta: !input stop_delta
+  stop_temperature: !input stop_temperature
+  max_run_time: !input max_run_time
+  min_pause: !input min_pause
+  fallback_on: !input fallback_on_duration
+  fallback_off: !input fallback_off_duration
+  draw_overrides_gates: !input draw_overrides_gates
+
+  is_draw: "{{ trigger.id == 'draw' }}"
+  continuous: >-
+    {{ continuous_request_entities | select('is_state', 'on') | list | count > 0 }}
+  heater_ok: >-
+    {{ states(water_heater) not in blocked_states + ['unavailable', 'unknown'] }}
+  people_gates_open: >-
+    {{ is_state(presence_entity, 'on') and is_state(daymode_entity, 'on') }}
+  # Presence or day mode closed, but draws may still start pulses.
+  draw_only: "{{ not people_gates_open and draw_overrides_gates }}"
+  pump_state: "{{ states(pump) }}"
+  pump_minutes: >-
+    {{ ((now() - states[pump].last_changed).total_seconds() / 60) if states[pump] is not none else 0 }}
+  return_temp: "{{ states(return_sensor) | float(none) }}"
+  outlet_temp: "{{ states(outlet_sensor) | float(none) if outlet_sensor else none }}"
+  stop_target: >-
+    {{ (outlet_temp - stop_delta) if outlet_temp is not none else stop_temperature }}
+  in_peak: >-
+    {% set t = now().strftime('%H:%M:%S') %}
+    {% set ns = namespace(hit=false) %}
+    {% for s, e in [(peak1_start, peak1_end), (peak2_start, peak2_end)] %}
+      {% if (s <= e and s <= t < e) or (s > e and (t >= s or t < e)) %}
+        {% set ns.hit = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.hit }}
+  start_below: >-
+    {{ [peak_start_below if in_peak else offpeak_start_below, stop_target - 2] | min }}
+
+actions:
+  - choose:
+      # Switching the request off triggers the gate trigger, which then
+      # re-evaluates the pump in a fresh run.
+      - alias: Release continuous run - loop is hot
+        conditions:
+          - condition: trigger
+            id: release
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: >-
+                {{ continuous_request_entities | select('is_state', 'on') | list }}
+
+      - alias: Continuous run requested
+        conditions:
+          - condition: template
+            value_template: "{{ continuous }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ pump_state != 'on' }}"
+            then:
+              - action: switch.turn_on
+                target:
+                  entity_id: !input pump_switch
+
+      - alias: Gates closed
+        conditions:
+          - condition: template
+            value_template: "{{ not heater_ok or not (people_gates_open or draw_only) }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ pump_state != 'off' }}"
+            then:
+              - action: switch.turn_off
+                target:
+                  entity_id: !input pump_switch
+
+      - alias: Return sensor unavailable - fallback interval
+        conditions:
+          - condition: template
+            value_template: "{{ return_temp is none }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ pump_state == 'on' and pump_minutes >= fallback_on }}"
+                sequence:
+                  - action: switch.turn_off
+                    target:
+                      entity_id: !input pump_switch
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ pump_state == 'off'
+                         and ((pump_minutes >= fallback_off and not draw_only)
+                              or (is_draw and pump_minutes >= min_pause)) }}
+                sequence:
+                  - action: switch.turn_on
+                    target:
+                      entity_id: !input pump_switch
+
+      - alias: Pulse running - stop when hot or after max run time
+        conditions:
+          - condition: template
+            value_template: "{{ pump_state == 'on' }}"
+          - condition: template
+            value_template: "{{ return_temp >= stop_target or pump_minutes >= max_run_time }}"
+        sequence:
+          - action: switch.turn_off
+            target:
+              entity_id: !input pump_switch
+
+      - alias: Pump off - start when the loop has cooled down or on a draw
+        conditions:
+          - condition: template
+            value_template: "{{ pump_state == 'off' and pump_minutes >= min_pause }}"
+          - condition: template
+            value_template: >-
+              {{ (return_temp < start_below and not draw_only)
+                 or (is_draw and return_temp < stop_target - 1) }}
+        sequence:
+          - action: switch.turn_on
+            target:
+              entity_id: !input pump_switch
