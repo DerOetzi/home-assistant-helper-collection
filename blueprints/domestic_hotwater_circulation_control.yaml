@@ -149,6 +149,10 @@ triggers:
   - trigger: state
     entity_id: !input daymode_entity
     to: null
+  # A restart aborts a running interval cycle mid-"on" phase and leaves the
+  # pump switched on; re-evaluate on startup to restore the correct state.
+  - trigger: homeassistant
+    event: start
 
 actions:
   - choose:
