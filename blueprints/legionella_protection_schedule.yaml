@@ -221,7 +221,7 @@ blueprint:
         hold_time:
           name: Hold Time
           description: How long the return has to stay above its threshold.
-          default: 5
+          default: 30
           selector:
             number:
               min: 1
