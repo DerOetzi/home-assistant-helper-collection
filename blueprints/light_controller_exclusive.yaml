@@ -63,10 +63,14 @@ action:
     delay:
       seconds: !input switch_delay
 
+  # Einzeln aufrufen: Light-Controller-Blueprints triggern nur auf
+  # select_option mit genau einem Controller
   - alias: Alle anderen Controller ausschalten
-    action: input_select.select_option
-    target:
-      entity_id: >
-        {{ controller_entities | reject('eq', trigger.entity_id) | list }}
-    data:
-      option: "Off"
+    repeat:
+      for_each: "{{ controller_entities | reject('eq', trigger.entity_id) | list }}"
+      sequence:
+        - action: input_select.select_option
+          target:
+            entity_id: "{{ repeat.item }}"
+          data:
+            option: "Off"

@@ -36,10 +36,29 @@ max_exceeded: silent
 variables:
   controller_entity: !input controller_entity
   switch_entities: !input switch_entities
+  requested: "{{ trigger.event.data.service_data.option | lower }}"
 
 trigger:
-  - platform: state
-    entity_id: !input controller_entity
+  # Triggers on the service call itself, not on the state change: pressing the
+  # already selected option (dashboard or wall switch) changes no state but
+  # must still repeat the command, e.g. "Off" again when the light is on
+  # despite the controller showing Off.
+  # Websocket/script calls pass entity_id as a list, so match both forms.
+  # Calls targeting several controllers at once are NOT matched: always call
+  # select_option with exactly one controller entity.
+  - platform: event
+    event_type: call_service
+    event_data:
+      service: select_option
+      service_data:
+        entity_id:
+          - !input controller_entity
+  - platform: event
+    event_type: call_service
+    event_data:
+      service: select_option
+      service_data:
+        entity_id: !input controller_entity
 
 action:
   - alias: Handle controller state
@@ -48,7 +67,7 @@ action:
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.to_state.state | lower in ['on'] }}
+              {{ requested in ['on'] }}
         sequence:
           - action: switch.turn_on
             target:
@@ -58,7 +77,7 @@ action:
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.to_state.state | lower in ['off'] }}
+              {{ requested in ['off'] }}
         sequence:
           - action: switch.turn_off
             target:
@@ -69,7 +88,7 @@ action:
         action: system_log.write
         data:
           message: >
-            Light Controller Switch: Unknown state '{{ trigger.to_state.state }}'
+            Light Controller Switch: Unknown state '{{ requested }}'
             from controller '{{ controller_entity }}'.
             Expected states: On, Off.
           level: warning

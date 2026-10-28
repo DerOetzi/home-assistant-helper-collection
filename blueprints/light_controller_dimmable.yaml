@@ -100,10 +100,29 @@ variables:
   light_entities: !input light_entities
   default_color_temperature: !input default_color_temperature
   nightmode_color_temperature: !input nightmode_color_temperature
+  requested: "{{ trigger.event.data.service_data.option | lower }}"
 
 trigger:
-  - platform: state
-    entity_id: !input controller_entity
+  # Triggers on the service call itself, not on the state change: pressing the
+  # already selected option (dashboard or wall switch) changes no state but
+  # must still repeat the command, e.g. "Off" again when the light is on
+  # despite the controller showing Off.
+  # Websocket/script calls pass entity_id as a list, so match both forms.
+  # Calls targeting several controllers at once are NOT matched: always call
+  # select_option with exactly one controller entity.
+  - platform: event
+    event_type: call_service
+    event_data:
+      service: select_option
+      service_data:
+        entity_id:
+          - !input controller_entity
+  - platform: event
+    event_type: call_service
+    event_data:
+      service: select_option
+      service_data:
+        entity_id: !input controller_entity
 
 action:
   - alias: Handle controller state
@@ -112,7 +131,7 @@ action:
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.to_state.state | lower in ['on'] }}
+              {{ requested in ['on'] }}
         sequence:
           - action: light.turn_on
             target:
@@ -126,7 +145,7 @@ action:
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.to_state.state | lower in ['night', 'nightmode'] }}
+              {{ requested in ['night', 'nightmode'] }}
         sequence:
           - action: light.turn_on
             target:
@@ -140,20 +159,20 @@ action:
       - conditions:
           - condition: template
             value_template: >
-              {{ trigger.to_state.state | lower in ['off'] }}
+              {{ requested in ['off'] }}
         sequence:
+          # No transition: Z2M turns "off + transition" into a level-0 dim
+          # command, which switches already-off IKEA bulbs on.
           - action: light.turn_off
             target:
               entity_id: !input light_entities
-            data:
-              transition: !input transition_time
 
     default:
       - alias: Log unknown controller state
         action: system_log.write
         data:
           message: >
-            Light Controller: Unknown state '{{ trigger.to_state.state }}'
+            Light Controller: Unknown state '{{ requested }}'
             from controller '{{ controller_entity }}'.
             Expected states: On, Off, Night/Nightmode.
           level: warning
