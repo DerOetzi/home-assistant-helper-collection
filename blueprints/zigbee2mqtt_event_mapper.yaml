@@ -142,6 +142,12 @@ trigger:
     entity_id: !input event_entity
 
 condition:
+  - alias: Ignore restored state after reconnect/restart (not a real button press)
+    condition: template
+    value_template: >
+      {{ trigger.from_state is not none
+         and trigger.from_state.state not in ['unavailable', 'unknown'] }}
+
   - condition: template
     value_template: >
       {{ trigger.to_state.attributes.event_type is defined
