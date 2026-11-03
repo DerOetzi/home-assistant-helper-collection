@@ -41,8 +41,11 @@ blueprint:
     Verification (optional): after a successful start the automation waits
     until the outlet sensor (or the water heater's current_temperature) has
     reached the outlet threshold and, if a circulation return sensor is set,
-    the return has reached the return threshold and stayed there for the
-    hold time.
+    the return has stayed at or above the return threshold for the hold
+    time. Both are checked side by side from the start: the hold time counts
+    from the moment the return reaches its threshold, even before the outlet
+    is hot, so it matches a circulation controller that releases its
+    continuous run after the same hold time.
 
     Circulation request (optional): an input_boolean that is switched on
     after a successful start, so the circulation controller runs the pump
@@ -51,6 +54,15 @@ blueprint:
     thermostatic circulation blueprint). This automation only switches it
     off when the verification fails, so the pump never stays in continuous
     mode after a failed cycle.
+
+    Boost request (optional): instead of switching the operation mode, an
+    input_boolean is switched on that a temperature controller turns into a
+    high target (e.g. the boost of the "Domestic Hot Water PV Controller"
+    blueprint), so the cycle can run on the heat pump alone without a
+    booster heater. The start counts once the water heater target has
+    reached the outlet threshold; otherwise the request is switched off
+    again and retried. It is switched off when the cycle ends, successful
+    or not.
 
     Notification (optional): a push message is sent when the cycle could not
     be started within the retry window, or when the verification fails.
@@ -70,10 +82,22 @@ blueprint:
               domain: water_heater
         performance_mode:
           name: High-Temperature Operation Mode
-          description: Operation mode value to set for the legionella-protection cycle.
+          description: >
+            Operation mode value to set for the legionella-protection cycle.
+            Not used when a boost request is set.
           default: performance
           selector:
             text: {}
+        boost_request:
+          name: Boost Request (optional)
+          description: >
+            input_boolean that makes a temperature controller set a high
+            target. Replaces the operation mode switch. Leave empty to use
+            the operation mode.
+          default: ""
+          selector:
+            entity:
+              domain: input_boolean
     schedule:
       name: Schedule
       icon: mdi:clock-outline
@@ -269,6 +293,7 @@ trigger_variables:
 variables:
   water_heater: !input water_heater
   performance_mode: !input performance_mode
+  boost_request: !input boost_request
   comparison: !input comparison
   forecast_sensor: !input forecast_sensor
   threshold: !input threshold
@@ -361,19 +386,43 @@ actions:
           - condition: template
             value_template: "{{ not already_hot and not started_today }}"
           - condition: template
-            value_template: "{{ not is_state(water_heater, performance_mode) }}"
+            value_template: >-
+              {{ not is_state(boost_request, 'on') if boost_request
+                 else not is_state(water_heater, performance_mode) }}
         sequence:
           # A failing call (e.g. cloud unreachable) ends the run here; the
           # next retry trigger tries again.
-          - action: water_heater.set_operation_mode
-            target:
-              entity_id: !input water_heater
-            data:
-              operation_mode: !input performance_mode
-          - wait_template: "{{ is_state(water_heater, performance_mode) }}"
-            timeout:
-              minutes: 5
-            continue_on_timeout: false
+          - if:
+              - condition: template
+                value_template: "{{ boost_request != '' }}"
+            then:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: "{{ boost_request }}"
+              - wait_template: >-
+                  {{ state_attr(water_heater, 'temperature') | float(0) >= outlet_threshold }}
+                timeout:
+                  minutes: 5
+              # Switched off again so the next retry switches it on anew and
+              # the controller writes the target once more.
+              - if:
+                  - condition: template
+                    value_template: "{{ not wait.completed }}"
+                then:
+                  - action: input_boolean.turn_off
+                    target:
+                      entity_id: "{{ boost_request }}"
+                  - stop: Boost target not applied
+            else:
+              - action: water_heater.set_operation_mode
+                target:
+                  entity_id: !input water_heater
+                data:
+                  operation_mode: !input performance_mode
+              - wait_template: "{{ is_state(water_heater, performance_mode) }}"
+                timeout:
+                  minutes: 5
+                continue_on_timeout: false
           - if:
               - condition: template
                 value_template: "{{ last_start_helper != '' }}"
@@ -391,36 +440,63 @@ actions:
                 target:
                   entity_id: "{{ circulation_request }}"
 
-          - alias: Wait for the outlet temperature
-            wait_template: >-
-              {{ (states(outlet_sensor) if outlet_sensor else
-                  state_attr(water_heater, 'current_temperature')) | float(0)
-                 >= outlet_threshold }}
-            timeout:
-              minutes: "{{ verify_timeout }}"
+          # Outlet and return are checked side by side. The return hold time
+          # starts when the return reaches its threshold (even before the
+          # outlet is hot) and restarts when it drops below. Both results
+          # stick once reached. The loop only wakes on a threshold crossing
+          # or when a running hold time is over, not on every sensor update.
           - variables:
-              outlet_ok: "{{ wait.completed }}"
-              return_ok: true
-          - if:
-              - condition: template
-                value_template: "{{ outlet_ok and return_sensor != '' }}"
-            then:
-              - alias: Wait for the circulation return temperature
-                wait_template: "{{ states(return_sensor) | float(0) >= return_threshold }}"
-                timeout:
-                  minutes: "{{ verify_timeout }}"
-              - if:
-                  - condition: template
-                    value_template: "{{ wait.completed }}"
-                then:
-                  - delay:
-                      minutes: "{{ hold_time }}"
-                  - variables:
-                      return_ok: "{{ states(return_sensor) | float(0) >= return_threshold }}"
-                else:
-                  - variables:
-                      return_ok: false
+              verify_deadline: "{{ (now() + timedelta(minutes=verify_timeout | int)).isoformat() }}"
+              outlet_ok: false
+              return_ok: "{{ return_sensor == '' }}"
+              return_hot_since: ""
+          - alias: Wait for the outlet temperature and the circulation return hold
+            repeat:
+              sequence:
+                - wait_template: >-
+                    {% set o = (states(outlet_sensor) if outlet_sensor else
+                        state_attr(water_heater, 'current_temperature')) | float(0) %}
+                    {% set r_hot = return_sensor != ''
+                       and states(return_sensor) | float(0) >= return_threshold %}
+                    {{ (not outlet_ok and o >= outlet_threshold)
+                       or (not return_ok and r_hot != (return_hot_since != '')) }}
+                  timeout:
+                    seconds: >-
+                      {%- set ns = namespace(left=(as_datetime(verify_deadline) - now()).total_seconds()) -%}
+                      {%- if not return_ok and return_hot_since != '' -%}
+                        {%- set hold_left = (as_datetime(return_hot_since)
+                            + timedelta(minutes=hold_time | int) - now()).total_seconds() -%}
+                        {%- set ns.left = [ns.left, hold_left] | min -%}
+                      {%- endif -%}
+                      {{ [ns.left, 1] | max | round(0, 'ceil') | int }}
+                - variables:
+                    outlet_ok: >-
+                      {{ outlet_ok or (states(outlet_sensor) if outlet_sensor else
+                          state_attr(water_heater, 'current_temperature')) | float(0)
+                         >= outlet_threshold }}
+                    return_hot_since: >-
+                      {%- if return_ok -%}{{ return_hot_since }}
+                      {%- elif states(return_sensor) | float(0) >= return_threshold -%}
+                        {{ return_hot_since if return_hot_since != '' else now().isoformat() }}
+                      {%- endif -%}
+                - variables:
+                    return_ok: >-
+                      {{ return_ok or (return_hot_since != ''
+                         and now() >= as_datetime(return_hot_since)
+                                      + timedelta(minutes=hold_time | int)) }}
+              until:
+                - condition: template
+                  value_template: >-
+                    {{ (outlet_ok and return_ok) or now() >= as_datetime(verify_deadline) }}
 
+          - alias: Cycle over - end the boost request
+            if:
+              - condition: template
+                value_template: "{{ boost_request != '' }}"
+            then:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: "{{ boost_request }}"
           - alias: Failed cycle - end the circulation request
             if:
               - condition: template
