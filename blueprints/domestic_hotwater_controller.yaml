@@ -1,0 +1,761 @@
+blueprint:
+  name: Domestic Hot Water Controller
+  description: >
+    Decides between a PV-surplus and a normal operation mode for a domestic
+    hot water system, and writes the result to a select entity plus a
+    target temperature on a water heater.
+
+    Surplus mode requires all of: grid delivery above a lower threshold,
+    optionally battery state of charge above a threshold, optionally
+    battery discharge power below a threshold (i.e. battery not
+    discharging — robust when the battery is deliberately discharged for
+    grid services, where SoC never gets high and high grid export is not
+    PV surplus), optionally the water tank temperature above a threshold
+    — AND EITHER outside
+    temperature above an upper threshold (summer: assume there will be
+    enough PV without waiting) OR grid delivery above a higher threshold
+    stable for a configurable duration AND outside temperature above a
+    lower threshold (shoulder season: only commit once the surplus has
+    proven stable).
+
+    Surplus mode is released again only below a separate, lower release
+    threshold, and no mode change is written until a minimum hold time has
+    passed since the last one. Both exist because the surplus load itself
+    depresses grid delivery — without them the controller oscillates against
+    its own load, and every flip costs a write to the water heater (and, with
+    a cloud-backed integration, an API call). The heater target is also only
+    written when it actually differs from what is already set. Point the
+    optional timestamp helper at an input_datetime to make the hold time
+    survive Home Assistant restarts.
+
+    Charge window (optional): inside a daily time window the normal mode
+    uses a higher target, outside it the regular normal target. With a low
+    normal target the tank reheats mostly once a day inside the window
+    (e.g. the warmest hours of the afternoon) instead of whenever it cools
+    down, including at night.
+
+    Night setback (optional): inside a daily time window (may cross
+    midnight) the normal target is a low night temperature, so the tank
+    does not reheat while nobody draws water.
+
+    Forced charging (optional): a water heater in "reheat only" mode starts
+    heating only once the tank drops below its target minus the reheat
+    hysteresis. So when the charge window, surplus mode or boost begins,
+    the target is raised to at least the current tank temperature plus that
+    hysteresis plus 1 (capped at a maximum), which makes the heater start
+    right away. While the phase lasts, a target at or above the phase's own
+    temperature is kept as it is, so the target does not climb along with
+    the heating tank.
+
+    Boost (optional): while an input_boolean is "on", the water heater
+    target is the boost temperature, regardless of mode, hold time and
+    manual override. Whoever turns it on turns it off again (e.g. the
+    "Legionella Protection Schedule" blueprint); as a safety net it is
+    switched off after a maximum duration and on every Home Assistant
+    start.
+
+    Pair with the "Manual Override Block" blueprint (target_entity: the
+    same select entity) so a person manually choosing a mode is not
+    immediately overwritten: this blueprint checks the resulting
+    input_boolean and does not change the select while it is "on". The
+    water heater target still follows the selected mode.
+  domain: automation
+  author: deroetzi
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    grid:
+      name: Grid Delivery
+      icon: mdi:transmission-tower-export
+      input:
+        grid_sensor:
+          name: Grid Delivery Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: power
+        grid_lower:
+          name: Grid Lower Threshold
+          default: 3000
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        grid_upper:
+          name: Grid Upper Threshold
+          default: 5000
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        grid_upper_stable_boolean:
+          name: Grid Upper Stable Flag
+          description: >
+            A plain input_boolean helper (create one, no configuration
+            needed on it). This blueprint maintains it itself — turning it
+            on once grid delivery has stayed above the upper threshold for
+            the stabilize time below, and off as soon as it drops back —
+            because numeric_state conditions cannot carry a `for:`
+            duration, only state conditions can.
+          selector:
+            entity:
+              domain: input_boolean
+        grid_stabilize_time:
+          name: Grid Upper Stabilize Time
+          description: How long grid delivery must stay above the upper threshold before it counts.
+          default:
+            minutes: 5
+          selector:
+            duration: {}
+        grid_release:
+          name: Grid Release Threshold
+          description: >
+            Hysteresis for the lower threshold. Surplus mode starts once grid
+            delivery rises above the lower threshold, but only ends once it
+            falls below THIS value — in between, the current mode is held.
+            Without it a grid reading hovering around the lower threshold
+            toggles the mode on every sensor update. Set it equal to the lower
+            threshold to disable hysteresis.
+          default: 1000
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+    battery:
+      name: Battery Gate
+      icon: mdi:battery-high
+      collapsed: true
+      input:
+        battery_gate_enabled:
+          name: Enable Battery Gate
+          default: true
+          selector:
+            boolean: {}
+        battery_sensor:
+          name: Battery State of Charge Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: battery
+        battery_threshold:
+          name: Battery Threshold
+          default: 90
+          selector:
+            number:
+              min: 0
+              max: 100
+              unit_of_measurement: "%"
+              mode: box
+    battery_discharge:
+      name: Battery Discharge Gate
+      icon: mdi:battery-arrow-down
+      collapsed: true
+      input:
+        battery_discharge_gate_enabled:
+          name: Enable Battery Discharge Gate
+          description: >
+            Additional to the SoC gate: only allow surplus while the battery
+            is NOT meaningfully discharging (house load covered by PV, so any
+            export/charge is genuine PV surplus). Combine with a low SoC
+            threshold as a floor, or use instead of the SoC gate on systems
+            that deliberately discharge the battery for grid services.
+          default: false
+          selector:
+            boolean: {}
+        battery_discharge_sensor:
+          name: Battery Discharge Power Sensor
+          description: A power sensor reading the battery DISCHARGE power (positive when discharging).
+          selector:
+            entity:
+              domain: sensor
+              device_class: power
+        battery_discharge_threshold:
+          name: Battery Discharge Threshold
+          description: Surplus is gated closed while discharge power stays above this. Keep above idle / base-load noise.
+          default: 300
+          selector:
+            number:
+              min: 0
+              max: 20000
+              unit_of_measurement: W
+              mode: box
+        battery_discharge_stabilize_time:
+          name: Battery Discharge Stabilize Time
+          description: >
+            Debounce — discharge must stay across the threshold for this long
+            before it flips the gate, so a boost load that briefly pulls from
+            the battery does not immediately cancel itself.
+          default:
+            minutes: 2
+          selector:
+            duration:
+              enable_second: true
+    outside:
+      name: Outside Temperature
+      icon: mdi:thermometer
+      input:
+        outside_temp_sensor:
+          name: Outside Temperature Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        outside_lower:
+          name: Outside Temperature Lower Threshold
+          description: Used for the shoulder-season condition (with stable grid upper).
+          default: 12
+          selector:
+            number:
+              min: -20
+              max: 40
+              unit_of_measurement: "°C"
+              mode: box
+        outside_upper:
+          name: Outside Temperature Upper Threshold
+          description: Used for the immediate summer condition.
+          default: 24
+          selector:
+            number:
+              min: -20
+              max: 40
+              unit_of_measurement: "°C"
+              mode: box
+    water_temp:
+      name: Water Temperature Gate
+      icon: mdi:coolant-temperature
+      collapsed: true
+      input:
+        water_temp_gate_enabled:
+          name: Enable Water Temperature Gate
+          default: true
+          selector:
+            boolean: {}
+        water_temp_sensor:
+          name: Water Tank Temperature Sensor
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        water_temp_gate:
+          name: Water Temperature Gate Threshold
+          default: 48
+          selector:
+            number:
+              min: 0
+              max: 90
+              unit_of_measurement: "°C"
+              mode: box
+    output:
+      name: Output
+      icon: mdi:water-boiler
+      input:
+        target_select:
+          name: Operation Mode Select
+          description: >
+            An input_select helper (not a generic select.* entity — those
+            use a different service, input_select.select_option, which
+            this blueprint calls).
+          selector:
+            entity:
+              domain: input_select
+        surplus_option:
+          name: Surplus Option
+          default: Überschuss
+          selector:
+            text: {}
+        normal_option:
+          name: Normal Option
+          default: Normalbetrieb
+          selector:
+            text: {}
+        water_heater:
+          name: Water Heater
+          selector:
+            entity:
+              domain: water_heater
+        surplus_temp:
+          name: Surplus Target Temperature
+          default: 53
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+        normal_temp:
+          name: Normal Target Temperature
+          default: 48
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+        min_hold_minutes:
+          name: Minimum Mode Hold Time
+          description: >
+            After a mode change, no further change is written for this long.
+            Guards against self-oscillation: switching to surplus adds load,
+            which pushes grid delivery back below the threshold, which
+            switches surplus off again. Set to 0 to disable.
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 120
+              unit_of_measurement: min
+              mode: box
+        mode_changed_timestamp:
+          name: Last Mode Change Timestamp
+          description: >
+            Optional input_datetime helper with both date and time. When set,
+            this blueprint writes the time of every actual mode change to it
+            and measures the minimum hold time against it. Without it the hold
+            is measured against the select entity's last_changed, which Home
+            Assistant resets on every restart — so a restart re-arms the full
+            hold time and can strand the system in surplus mode.
+          default: []
+          selector:
+            entity:
+              domain: input_datetime
+        override_blocked_boolean:
+          name: Manual Override Blocked Flag
+          description: >
+            input_boolean set by a paired "Manual Override Block" instance
+            watching the operation mode select. While "on", this blueprint
+            does not change the select.
+          selector:
+            entity:
+              domain: input_boolean
+    charge_window:
+      name: Charge Window
+      icon: mdi:clock-time-three-outline
+      collapsed: true
+      input:
+        charge_window_enabled:
+          name: Enable Charge Window
+          default: false
+          selector:
+            boolean: {}
+        charge_window_start:
+          name: Charge Window Start
+          default: "13:00:00"
+          selector:
+            time: {}
+        charge_window_end:
+          name: Charge Window End
+          description: Later than the start, same day.
+          default: "16:00:00"
+          selector:
+            time: {}
+        charge_window_temp:
+          name: Charge Window Target Temperature
+          description: Normal-mode target inside the window. Surplus mode keeps its own target.
+          default: 53
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+    night_setback:
+      name: Night Setback
+      icon: mdi:weather-night
+      collapsed: true
+      input:
+        night_enabled:
+          name: Enable Night Setback
+          default: false
+          selector:
+            boolean: {}
+        night_start:
+          name: Night Start
+          default: "21:00:00"
+          selector:
+            time: {}
+        night_end:
+          name: Night End
+          description: May be earlier than the start (window crosses midnight).
+          default: "05:00:00"
+          selector:
+            time: {}
+        night_temp:
+          name: Night Target Temperature
+          description: Replaces the normal target at night. Surplus, charge window and boost keep their own targets.
+          default: 38
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+    forced_charge:
+      name: Forced Charging
+      icon: mdi:fire
+      collapsed: true
+      input:
+        forced_charge_enabled:
+          name: Enable Forced Charging
+          description: Applies to the charge window, surplus mode and boost.
+          default: false
+          selector:
+            boolean: {}
+        reheat_hysteresis:
+          name: Reheat Hysteresis
+          description: The water heater's own reheat hysteresis (Daikin [6-08]).
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 20
+              unit_of_measurement: K
+              mode: box
+        max_setpoint:
+          name: Maximum Target Temperature
+          description: Upper limit for a forced target (Daikin [6-0E]).
+          default: 60
+          selector:
+            number:
+              min: 30
+              max: 80
+              unit_of_measurement: "°C"
+              mode: box
+    boost:
+      name: Boost
+      icon: mdi:rocket-launch
+      collapsed: true
+      input:
+        boost_boolean:
+          name: Boost Request
+          description: input_boolean that requests the boost target while "on". Leave empty to disable.
+          default: []
+          selector:
+            entity:
+              domain: input_boolean
+        boost_temp:
+          name: Boost Target Temperature
+          default: 60
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+        boost_max_duration:
+          name: Boost Maximum Duration
+          description: Safety net — the boost request is switched off after being "on" this long.
+          default:
+            hours: 6
+          selector:
+            duration: {}
+
+mode: single
+max_exceeded: silent
+
+trigger_variables:
+  t_boost: !input boost_boolean
+
+variables:
+  target_select_entity: !input target_select
+  water_heater_entity: !input water_heater
+  surplus_temp_value: !input surplus_temp
+  normal_temp_value: !input normal_temp
+  min_hold_minutes_value: !input min_hold_minutes
+  surplus_option_value: !input surplus_option
+  normal_option_value: !input normal_option
+  mode_changed_ts_entity: !input mode_changed_timestamp
+  charge_window_enabled_value: !input charge_window_enabled
+  charge_window_start_value: !input charge_window_start
+  charge_window_end_value: !input charge_window_end
+  charge_window_temp_value: !input charge_window_temp
+  boost_entity: !input boost_boolean
+  boost_temp_value: !input boost_temp
+  night_enabled_value: !input night_enabled
+  night_start_value: !input night_start
+  night_end_value: !input night_end
+  night_temp_value: !input night_temp
+  forced_charge_enabled_value: !input forced_charge_enabled
+  reheat_hysteresis_value: !input reheat_hysteresis
+  max_setpoint_value: !input max_setpoint
+  water_temp_entity: !input water_temp_sensor
+  previous_mode: "{{ states(target_select_entity) }}"
+  # Boost, charge window and night setback only move the target at a fixed
+  # moment, they cannot oscillate — so they are not held back by the minimum
+  # hold time.
+  bypass_hold: "{{ trigger.id in ['boost', 'boost_timeout', 'charge_window', 'night'] }}"
+
+triggers:
+  - trigger: numeric_state
+    entity_id: !input grid_sensor
+    above: !input grid_lower
+  - trigger: numeric_state
+    entity_id: !input grid_sensor
+    below: !input grid_lower
+  - trigger: numeric_state
+    entity_id: !input grid_sensor
+    below: !input grid_release
+  - id: grid_upper_stable
+    trigger: numeric_state
+    entity_id: !input grid_sensor
+    above: !input grid_upper
+    for: !input grid_stabilize_time
+  - id: grid_upper_unstable
+    trigger: numeric_state
+    entity_id: !input grid_sensor
+    below: !input grid_upper
+  - trigger: numeric_state
+    entity_id: !input battery_sensor
+    above: !input battery_threshold
+    enabled: !input battery_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input battery_sensor
+    below: !input battery_threshold
+    enabled: !input battery_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input battery_discharge_sensor
+    below: !input battery_discharge_threshold
+    for: !input battery_discharge_stabilize_time
+    enabled: !input battery_discharge_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input battery_discharge_sensor
+    above: !input battery_discharge_threshold
+    for: !input battery_discharge_stabilize_time
+    enabled: !input battery_discharge_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    above: !input outside_lower
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    below: !input outside_lower
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    above: !input outside_upper
+  - trigger: numeric_state
+    entity_id: !input outside_temp_sensor
+    below: !input outside_upper
+  - trigger: numeric_state
+    entity_id: !input water_temp_sensor
+    above: !input water_temp_gate
+    enabled: !input water_temp_gate_enabled
+  - trigger: numeric_state
+    entity_id: !input water_temp_sensor
+    below: !input water_temp_gate
+    enabled: !input water_temp_gate_enabled
+  - trigger: state
+    entity_id: !input override_blocked_boolean
+    to: "off"
+  - id: charge_window
+    trigger: time
+    at: !input charge_window_start
+    enabled: !input charge_window_enabled
+  - id: charge_window
+    trigger: time
+    at: !input charge_window_end
+    enabled: !input charge_window_enabled
+  - id: night
+    trigger: time
+    at: !input night_start
+    enabled: !input night_enabled
+  - id: night
+    trigger: time
+    at: !input night_end
+    enabled: !input night_enabled
+  # Template triggers, because the boost request is optional (an empty
+  # input would make a state trigger invalid).
+  - id: boost
+    trigger: template
+    value_template: "{{ t_boost is string and is_state(t_boost, 'on') }}"
+  - id: boost
+    trigger: template
+    value_template: "{{ t_boost is string and is_state(t_boost, 'off') }}"
+  - id: boost_timeout
+    trigger: template
+    value_template: "{{ t_boost is string and is_state(t_boost, 'on') }}"
+    for: !input boost_max_duration
+  # A restart drops the running timeout above and any automation that was
+  # going to release the boost, so a boost never survives a restart.
+  - id: boost_timeout
+    trigger: homeassistant
+    event: start
+
+actions:
+  - alias: Maintain the grid-upper-stable flag (independent of override block)
+    choose:
+      - conditions:
+          - condition: trigger
+            id: grid_upper_stable
+        sequence:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input grid_upper_stable_boolean
+      - conditions:
+          - condition: trigger
+            id: grid_upper_unstable
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input grid_upper_stable_boolean
+
+  # mode: single drops the trigger this switch-off causes; the target is
+  # applied further down in this same run instead.
+  - alias: Boost safety net - release the boost request
+    if:
+      - condition: trigger
+        id: boost_timeout
+      - condition: template
+        value_template: "{{ boost_entity is string and is_state(boost_entity, 'on') }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ boost_entity }}"
+
+  - alias: Choose the mode, unless a manual override block or the minimum hold time is active
+    if:
+      - condition: state
+        entity_id: !input override_blocked_boolean
+        state: "off"
+      - condition: template
+        value_template: >
+          {% set hold = (min_hold_minutes_value | float(0)) * 60 %}
+          {% set stamped = mode_changed_ts_entity is string
+                           and state_attr(mode_changed_ts_entity, 'timestamp') is not none %}
+          {% if bypass_hold %}
+            true
+          {% elif stamped %}
+            {{ now().timestamp()
+               - (state_attr(mode_changed_ts_entity, 'timestamp') | float(0)) >= hold }}
+          {% else %}
+            {% set mode = states[target_select_entity] %}
+            {{ mode is none
+               or (now() - mode.last_changed).total_seconds() >= hold }}
+          {% endif %}
+    then:
+      - choose:
+          - alias: Surplus mode
+            conditions:
+              - alias: Above the lower threshold, or already in surplus and still above the release threshold
+                condition: or
+                conditions:
+                  - condition: numeric_state
+                    entity_id: !input grid_sensor
+                    above: !input grid_lower
+                  - condition: and
+                    conditions:
+                      - condition: state
+                        entity_id: !input target_select
+                        state: !input surplus_option
+                      - condition: numeric_state
+                        entity_id: !input grid_sensor
+                        above: !input grid_release
+              - condition: numeric_state
+                entity_id: !input battery_sensor
+                above: !input battery_threshold
+                enabled: !input battery_gate_enabled
+              - condition: numeric_state
+                entity_id: !input battery_discharge_sensor
+                below: !input battery_discharge_threshold
+                enabled: !input battery_discharge_gate_enabled
+              - condition: numeric_state
+                entity_id: !input water_temp_sensor
+                above: !input water_temp_gate
+                enabled: !input water_temp_gate_enabled
+              - condition: or
+                conditions:
+                  - condition: numeric_state
+                    entity_id: !input outside_temp_sensor
+                    above: !input outside_upper
+                  - condition: and
+                    conditions:
+                      - condition: state
+                        entity_id: !input grid_upper_stable_boolean
+                        state: "on"
+                      - condition: numeric_state
+                        entity_id: !input outside_temp_sensor
+                        above: !input outside_lower
+            sequence:
+              - action: input_select.select_option
+                target:
+                  entity_id: !input target_select
+                data:
+                  option: !input surplus_option
+              - alias: Record the time of an actual mode change
+                if:
+                  - condition: template
+                    value_template: >
+                      {{ mode_changed_ts_entity is string
+                         and previous_mode != surplus_option_value }}
+                then:
+                  - action: input_datetime.set_datetime
+                    target:
+                      entity_id: !input mode_changed_timestamp
+                    data:
+                      timestamp: "{{ now().timestamp() }}"
+        default:
+          - alias: Normal mode
+            action: input_select.select_option
+            target:
+              entity_id: !input target_select
+            data:
+              option: !input normal_option
+          - alias: Record the time of an actual mode change
+            if:
+              - condition: template
+                value_template: >
+                  {{ mode_changed_ts_entity is string
+                     and previous_mode != normal_option_value }}
+            then:
+              - action: input_datetime.set_datetime
+                target:
+                  entity_id: !input mode_changed_timestamp
+                data:
+                  timestamp: "{{ now().timestamp() }}"
+
+  - alias: Target for boost, the selected mode, the charge window and the night
+    variables:
+      target_temp: >
+        {% set ns = today_at(night_start_value) %}
+        {% set ne = today_at(night_end_value) %}
+        {% set in_night = night_enabled_value
+                          and ((now() >= ns or now() < ne) if ns > ne
+                               else (ns <= now() < ne)) %}
+        {% set in_window = charge_window_enabled_value
+                           and today_at(charge_window_start_value) <= now()
+                               < today_at(charge_window_end_value) %}
+        {% if boost_entity is string and is_state(boost_entity, 'on') %}
+          {% set base, forced = boost_temp_value | float, true %}
+        {% elif is_state(target_select_entity, surplus_option_value) %}
+          {% set base, forced = surplus_temp_value | float, true %}
+        {% elif in_window %}
+          {% set base, forced = charge_window_temp_value | float, true %}
+        {% elif in_night %}
+          {% set base, forced = night_temp_value | float, false %}
+        {% else %}
+          {% set base, forced = normal_temp_value | float, false %}
+        {% endif %}
+        {% set current = state_attr(water_heater_entity, 'temperature') | float(0) %}
+        {% set cap = max_setpoint_value | float %}
+        {% if not (forced and forced_charge_enabled_value) %}
+          {{ base }}
+        {% elif current >= base %}
+          {{ [current, cap] | min }}
+        {% else %}
+          {% set tank = states(water_temp_entity) | float(0) %}
+          {{ [[base, tank + (reheat_hysteresis_value | float) + 1] | max, cap] | min }}
+        {% endif %}
+
+  - alias: Stop here unless the water heater target actually needs changing
+    condition: template
+    value_template: >
+      {{ state_attr(water_heater_entity, 'temperature') | float(-1)
+         != target_temp | float(0) }}
+  - action: water_heater.set_temperature
+    target:
+      entity_id: !input water_heater
+    data:
+      temperature: "{{ target_temp }}"

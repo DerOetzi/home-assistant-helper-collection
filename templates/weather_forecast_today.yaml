@@ -1,0 +1,39 @@
+# Tageshoechst-/Tiefsttemperatur heute aus der Tagesvorhersage einer
+# weather-Entity (hier Open-Meteo: weather.zuhause). Entity-ID an beiden
+# Stellen anpassen.
+- trigger:
+    - trigger: time_pattern
+      minutes: /15
+    - trigger: homeassistant
+      event: start
+    - trigger: event
+      event_type: event_template_reloaded
+  action:
+    - action: weather.get_forecasts
+      target:
+        entity_id: weather.zuhause
+      data:
+        type: daily
+      response_variable: forecast_result
+    - variables:
+        forecast_today: "{{ forecast_result['weather.zuhause'].forecast[0] }}"
+  sensor:
+    - name: Wetter Höchsttemperatur heute
+      unique_id: wetter_hochsttemperatur_heute
+      default_entity_id: sensor.wetter_hochsttemperatur_heute
+      state: "{{ forecast_today.temperature }}"
+      attributes:
+        timestamp: "{{ forecast_today.datetime }}"
+      icon: mdi:thermometer-high
+      unit_of_measurement: "°C"
+      device_class: temperature
+
+    - name: Wetter Tiefsttemperatur heute
+      unique_id: wetter_tiefsttemperatur_heute
+      default_entity_id: sensor.wetter_tiefsttemperatur_heute
+      state: "{{ forecast_today.templow }}"
+      attributes:
+        timestamp: "{{ forecast_today.datetime }}"
+      icon: mdi:thermometer-low
+      unit_of_measurement: "°C"
+      device_class: temperature

@@ -28,10 +28,24 @@ blueprint:
     optional timestamp helper at an input_datetime to make the hold time
     survive Home Assistant restarts.
 
+    Charge window (optional): inside a daily time window the normal mode
+    uses a higher target, outside it the regular normal target. With a low
+    normal target the tank reheats mostly once a day inside the window
+    (e.g. the warmest hours of the afternoon) instead of whenever it cools
+    down, including at night.
+
+    Boost (optional): while an input_boolean is "on", the water heater
+    target is the boost temperature, regardless of mode, hold time and
+    manual override. Whoever turns it on turns it off again (e.g. the
+    "Legionella Protection Schedule" blueprint); as a safety net it is
+    switched off after a maximum duration and on every Home Assistant
+    start.
+
     Pair with the "Manual Override Block" blueprint (target_entity: the
     same select entity) so a person manually choosing a mode is not
     immediately overwritten: this blueprint checks the resulting
-    input_boolean and skips writing while it is "on".
+    input_boolean and does not change the select while it is "on". The
+    water heater target still follows the selected mode.
   domain: automation
   author: deroetzi
   homeassistant:
@@ -302,15 +316,77 @@ blueprint:
           description: >
             input_boolean set by a paired "Manual Override Block" instance
             watching the operation mode select. While "on", this blueprint
-            does not write to the select or the water heater.
+            does not change the select.
           selector:
             entity:
               domain: input_boolean
+    charge_window:
+      name: Charge Window
+      icon: mdi:clock-time-three-outline
+      collapsed: true
+      input:
+        charge_window_enabled:
+          name: Enable Charge Window
+          default: false
+          selector:
+            boolean: {}
+        charge_window_start:
+          name: Charge Window Start
+          default: "13:00:00"
+          selector:
+            time: {}
+        charge_window_end:
+          name: Charge Window End
+          description: Later than the start, same day.
+          default: "16:00:00"
+          selector:
+            time: {}
+        charge_window_temp:
+          name: Charge Window Target Temperature
+          description: Normal-mode target inside the window. Surplus mode keeps its own target.
+          default: 53
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+    boost:
+      name: Boost
+      icon: mdi:rocket-launch
+      collapsed: true
+      input:
+        boost_boolean:
+          name: Boost Request
+          description: input_boolean that requests the boost target while "on". Leave empty to disable.
+          default: []
+          selector:
+            entity:
+              domain: input_boolean
+        boost_temp:
+          name: Boost Target Temperature
+          default: 60
+          selector:
+            number:
+              min: 30
+              max: 65
+              unit_of_measurement: "°C"
+              mode: box
+        boost_max_duration:
+          name: Boost Maximum Duration
+          description: Safety net — the boost request is switched off after being "on" this long.
+          default:
+            hours: 6
+          selector:
+            duration: {}
 
   source_url: https://raw.githubusercontent.com/DerOetzi/home-assistant-helper-collection/refs/heads/main/blueprints/domestic_hotwater_pv_controller.yaml
 
 mode: single
 max_exceeded: silent
+
+trigger_variables:
+  t_boost: !input boost_boolean
 
 variables:
   target_select_entity: !input target_select
@@ -321,7 +397,16 @@ variables:
   surplus_option_value: !input surplus_option
   normal_option_value: !input normal_option
   mode_changed_ts_entity: !input mode_changed_timestamp
+  charge_window_enabled_value: !input charge_window_enabled
+  charge_window_start_value: !input charge_window_start
+  charge_window_end_value: !input charge_window_end
+  charge_window_temp_value: !input charge_window_temp
+  boost_entity: !input boost_boolean
+  boost_temp_value: !input boost_temp
   previous_mode: "{{ states(target_select_entity) }}"
+  # Boost and charge window only move the target at a fixed moment, they
+  # cannot oscillate — so they are not held back by the minimum hold time.
+  bypass_hold: "{{ trigger.id in ['boost', 'boost_timeout', 'charge_window'] }}"
 
 triggers:
   - trigger: numeric_state
@@ -383,6 +468,31 @@ triggers:
   - trigger: state
     entity_id: !input override_blocked_boolean
     to: "off"
+  - id: charge_window
+    trigger: time
+    at: !input charge_window_start
+    enabled: !input charge_window_enabled
+  - id: charge_window
+    trigger: time
+    at: !input charge_window_end
+    enabled: !input charge_window_enabled
+  # Template triggers, because the boost request is optional (an empty
+  # input would make a state trigger invalid).
+  - id: boost
+    trigger: template
+    value_template: "{{ t_boost is string and is_state(t_boost, 'on') }}"
+  - id: boost
+    trigger: template
+    value_template: "{{ t_boost is string and is_state(t_boost, 'off') }}"
+  - id: boost_timeout
+    trigger: template
+    value_template: "{{ t_boost is string and is_state(t_boost, 'on') }}"
+    for: !input boost_max_duration
+  # A restart drops the running timeout above and any automation that was
+  # going to release the boost, so a boost never survives a restart.
+  - id: boost_timeout
+    trigger: homeassistant
+    event: start
 
 actions:
   - alias: Maintain the grid-upper-stable flag (independent of override block)
@@ -402,122 +512,141 @@ actions:
             target:
               entity_id: !input grid_upper_stable_boolean
 
-  - alias: Skip while a manual override block is active
-    condition: state
-    entity_id: !input override_blocked_boolean
-    state: "off"
+  # mode: single drops the trigger this switch-off causes; the target is
+  # applied further down in this same run instead.
+  - alias: Boost safety net - release the boost request
+    if:
+      - condition: trigger
+        id: boost_timeout
+      - condition: template
+        value_template: "{{ boost_entity is string and is_state(boost_entity, 'on') }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: "{{ boost_entity }}"
 
-  - alias: Skip until the minimum mode hold time has elapsed
-    condition: template
-    value_template: >
-      {% set hold = (min_hold_minutes_value | float(0)) * 60 %}
-      {% set stamped = mode_changed_ts_entity is string
-                       and state_attr(mode_changed_ts_entity, 'timestamp') is not none %}
-      {% if stamped %}
-        {{ now().timestamp()
-           - (state_attr(mode_changed_ts_entity, 'timestamp') | float(0)) >= hold }}
-      {% else %}
-        {% set mode = states[target_select_entity] %}
-        {{ mode is none
-           or (now() - mode.last_changed).total_seconds() >= hold }}
-      {% endif %}
-
-  - choose:
-      - alias: Surplus mode
-        conditions:
-          - alias: Above the lower threshold, or already in surplus and still above the release threshold
-            condition: or
+  - alias: Choose the mode, unless a manual override block or the minimum hold time is active
+    if:
+      - condition: state
+        entity_id: !input override_blocked_boolean
+        state: "off"
+      - condition: template
+        value_template: >
+          {% set hold = (min_hold_minutes_value | float(0)) * 60 %}
+          {% set stamped = mode_changed_ts_entity is string
+                           and state_attr(mode_changed_ts_entity, 'timestamp') is not none %}
+          {% if bypass_hold %}
+            true
+          {% elif stamped %}
+            {{ now().timestamp()
+               - (state_attr(mode_changed_ts_entity, 'timestamp') | float(0)) >= hold }}
+          {% else %}
+            {% set mode = states[target_select_entity] %}
+            {{ mode is none
+               or (now() - mode.last_changed).total_seconds() >= hold }}
+          {% endif %}
+    then:
+      - choose:
+          - alias: Surplus mode
             conditions:
-              - condition: numeric_state
-                entity_id: !input grid_sensor
-                above: !input grid_lower
-              - condition: and
+              - alias: Above the lower threshold, or already in surplus and still above the release threshold
+                condition: or
                 conditions:
-                  - condition: state
-                    entity_id: !input target_select
-                    state: !input surplus_option
                   - condition: numeric_state
                     entity_id: !input grid_sensor
-                    above: !input grid_release
-          - condition: numeric_state
-            entity_id: !input battery_sensor
-            above: !input battery_threshold
-            enabled: !input battery_gate_enabled
-          - condition: numeric_state
-            entity_id: !input battery_discharge_sensor
-            below: !input battery_discharge_threshold
-            enabled: !input battery_discharge_gate_enabled
-          - condition: numeric_state
-            entity_id: !input water_temp_sensor
-            above: !input water_temp_gate
-            enabled: !input water_temp_gate_enabled
-          - condition: or
-            conditions:
+                    above: !input grid_lower
+                  - condition: and
+                    conditions:
+                      - condition: state
+                        entity_id: !input target_select
+                        state: !input surplus_option
+                      - condition: numeric_state
+                        entity_id: !input grid_sensor
+                        above: !input grid_release
               - condition: numeric_state
-                entity_id: !input outside_temp_sensor
-                above: !input outside_upper
-              - condition: and
+                entity_id: !input battery_sensor
+                above: !input battery_threshold
+                enabled: !input battery_gate_enabled
+              - condition: numeric_state
+                entity_id: !input battery_discharge_sensor
+                below: !input battery_discharge_threshold
+                enabled: !input battery_discharge_gate_enabled
+              - condition: numeric_state
+                entity_id: !input water_temp_sensor
+                above: !input water_temp_gate
+                enabled: !input water_temp_gate_enabled
+              - condition: or
                 conditions:
-                  - condition: state
-                    entity_id: !input grid_upper_stable_boolean
-                    state: "on"
                   - condition: numeric_state
                     entity_id: !input outside_temp_sensor
-                    above: !input outside_lower
-        sequence:
-          - action: input_select.select_option
+                    above: !input outside_upper
+                  - condition: and
+                    conditions:
+                      - condition: state
+                        entity_id: !input grid_upper_stable_boolean
+                        state: "on"
+                      - condition: numeric_state
+                        entity_id: !input outside_temp_sensor
+                        above: !input outside_lower
+            sequence:
+              - action: input_select.select_option
+                target:
+                  entity_id: !input target_select
+                data:
+                  option: !input surplus_option
+              - alias: Record the time of an actual mode change
+                if:
+                  - condition: template
+                    value_template: >
+                      {{ mode_changed_ts_entity is string
+                         and previous_mode != surplus_option_value }}
+                then:
+                  - action: input_datetime.set_datetime
+                    target:
+                      entity_id: !input mode_changed_timestamp
+                    data:
+                      timestamp: "{{ now().timestamp() }}"
+        default:
+          - alias: Normal mode
+            action: input_select.select_option
             target:
               entity_id: !input target_select
             data:
-              option: !input surplus_option
+              option: !input normal_option
           - alias: Record the time of an actual mode change
             if:
               - condition: template
                 value_template: >
                   {{ mode_changed_ts_entity is string
-                     and previous_mode != surplus_option_value }}
+                     and previous_mode != normal_option_value }}
             then:
               - action: input_datetime.set_datetime
                 target:
                   entity_id: !input mode_changed_timestamp
                 data:
                   timestamp: "{{ now().timestamp() }}"
-          - alias: Stop here unless the water heater target actually needs changing
-            condition: template
-            value_template: >
-              {{ state_attr(water_heater_entity, 'temperature') | float(-1)
-                 != surplus_temp_value | float(0) }}
-          - action: water_heater.set_temperature
-            target:
-              entity_id: !input water_heater
-            data:
-              temperature: !input surplus_temp
-    default:
-      - alias: Normal mode
-        action: input_select.select_option
-        target:
-          entity_id: !input target_select
-        data:
-          option: !input normal_option
-      - alias: Record the time of an actual mode change
-        if:
-          - condition: template
-            value_template: >
-              {{ mode_changed_ts_entity is string
-                 and previous_mode != normal_option_value }}
-        then:
-          - action: input_datetime.set_datetime
-            target:
-              entity_id: !input mode_changed_timestamp
-            data:
-              timestamp: "{{ now().timestamp() }}"
-      - alias: Stop here unless the water heater target actually needs changing
-        condition: template
-        value_template: >
-          {{ state_attr(water_heater_entity, 'temperature') | float(-1)
-             != normal_temp_value | float(0) }}
-      - action: water_heater.set_temperature
-        target:
-          entity_id: !input water_heater
-        data:
-          temperature: !input normal_temp
+
+  - alias: Target for boost, the selected mode and the charge window
+    variables:
+      target_temp: >
+        {% if boost_entity is string and is_state(boost_entity, 'on') %}
+          {{ boost_temp_value }}
+        {% elif is_state(target_select_entity, surplus_option_value) %}
+          {{ surplus_temp_value }}
+        {% elif charge_window_enabled_value
+                and today_at(charge_window_start_value) <= now() < today_at(charge_window_end_value) %}
+          {{ charge_window_temp_value }}
+        {% else %}
+          {{ normal_temp_value }}
+        {% endif %}
+
+  - alias: Stop here unless the water heater target actually needs changing
+    condition: template
+    value_template: >
+      {{ state_attr(water_heater_entity, 'temperature') | float(-1)
+         != target_temp | float(0) }}
+  - action: water_heater.set_temperature
+    target:
+      entity_id: !input water_heater
+    data:
+      temperature: "{{ target_temp }}"
