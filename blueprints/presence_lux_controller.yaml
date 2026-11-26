@@ -6,23 +6,41 @@ blueprint:
     when a schedule helper is configured — within the active schedule window.
     Turns off as soon as any condition is no longer met.
 
+    Presence is optional: when no presence entity is given the light is
+    controlled by lux, schedule and night mode alone.
+
     Schedule helper is optional: when omitted the automation runs at any time
     of day as long as presence and lux conditions are satisfied.
 
     Night mode sensor is optional: when set (e.g. the output of the
     Night Mode Detector blueprint) the turn-on action is suppressed while
     night mode is active, so lights are not triggered while everyone is asleep.
+
+    Master switch is optional: when set and 'off', the automation sends no
+    action at all — neither on nor off — e.g. for seasonal devices that are
+    unplugged most of the year. Turning the master switch on re-evaluates
+    immediately. Turning it off does nothing here; handle switching off
+    separately if needed.
+
+    Blocking entities are optional: while any of them is 'on', the light is
+    turned off and kept off.
+
+    Hysteresis is optional: with a turn-off threshold above the darkness
+    threshold, the light turns on below the darkness threshold and off only
+    above the turn-off threshold; in between nothing is switched. A lux delay
+    requires the value to stay below/above the threshold for that long.
   domain: automation
   author: deroetzi
   homeassistant:
     min_version: 2024.6.0
   input:
     presence_entities:
-      name: Presence Entities
+      name: Presence Entities (optional)
       description: >
         One or more person / device_tracker / binary_sensor / input_boolean
         entities. At least one must be 'home' or 'on' for the light to turn
-        on (OR logic).
+        on (OR logic). Leave empty to ignore presence.
+      default: []
       selector:
         entity:
           multiple: true
@@ -53,6 +71,31 @@ blueprint:
           step: 1.0
           unit_of_measurement: lx
           mode: box
+    lux_threshold_off:
+      name: Turn-Off Threshold (optional)
+      description: >
+        Sensor value above which it is considered bright enough to turn off.
+        Values at or below the darkness threshold (default 0) mean no
+        hysteresis: off as soon as the darkness threshold is exceeded.
+      default: 0
+      selector:
+        number:
+          min: 0.0
+          max: 10000.0
+          step: 1.0
+          unit_of_measurement: lx
+          mode: box
+    lux_delay:
+      name: Lux Delay (optional)
+      description: >
+        How long the lux value must stay below the darkness threshold resp.
+        above the turn-off threshold before switching. Default 0.
+      default:
+        hours: 0
+        minutes: 0
+        seconds: 0
+      selector:
+        duration: {}
     schedule_helper:
       name: Schedule Helper (optional)
       description: >
@@ -79,6 +122,35 @@ blueprint:
             - input_boolean
             - binary_sensor
           multiple: false
+    master_switch:
+      name: Master Switch (optional)
+      description: >
+        input_boolean or binary_sensor. While 'off', the automation sends no
+        action at all. Leave empty to always run.
+      default: {}
+      selector:
+        entity:
+          domain:
+            - input_boolean
+            - binary_sensor
+          multiple: false
+    block_entities:
+      name: Blocking Entities (optional)
+      description: >
+        light / switch / input_boolean / binary_sensor entities. While any of
+        them is 'on', the turn-off action runs and nothing is turned on (e.g.
+        a regular night light that replaces a decoration). When the last one
+        turns off, conditions are re-evaluated immediately.
+      default: []
+      selector:
+        entity:
+          domain:
+            - light
+            - switch
+            - input_boolean
+            - binary_sensor
+          multiple: true
+          reorder: false
     on_action:
       name: Turn-On Action
       description: Actions to execute when all conditions are met.
@@ -94,21 +166,38 @@ blueprint:
 mode: restart
 max_exceeded: silent
 
+trigger_variables:
+  t_lux_sensor: !input lux_sensor
+  t_lux_threshold: !input lux_threshold
+  t_lux_threshold_off: !input lux_threshold_off
+
 variables:
   presence_entities: !input presence_entities
   lux_sensor: !input lux_sensor
   lux_threshold: !input lux_threshold
+  lux_threshold_off: !input lux_threshold_off
   schedule_helper: !input schedule_helper
   night_mode_sensor: !input night_mode_sensor
+  master_switch: !input master_switch
+  block_entities: !input block_entities
+
+  hysteresis: "{{ lux_threshold_off | float(0) > lux_threshold | float(10) }}"
+
+  lux: "{{ states(lux_sensor) | float(0) if lux_sensor != {} else 0 }}"
 
   is_dark: >-
-    {{ lux_sensor == {}
-       or states(lux_sensor) | float(0) < lux_threshold | float(10) }}
+    {{ lux_sensor == {} or lux < lux_threshold | float(10) }}
+
+  is_bright: >-
+    {{ lux_sensor != {}
+       and (lux > lux_threshold_off | float(0) if hysteresis
+            else lux >= lux_threshold | float(10)) }}
 
   someone_home: >-
-    {{ expand(presence_entities)
-       | selectattr('state', 'in', ['home', 'on'])
-       | list | count > 0 }}
+    {{ presence_entities | length == 0
+       or expand(presence_entities)
+          | selectattr('state', 'in', ['home', 'on'])
+          | list | count > 0 }}
 
   schedule_active: >-
     {{ schedule_helper == {} or is_state(schedule_helper, 'on') }}
@@ -116,17 +205,31 @@ variables:
   not_night_mode: >-
     {{ night_mode_sensor == {} or is_state(night_mode_sensor, 'off') }}
 
-  should_be_on: "{{ is_dark and someone_home and schedule_active and not_night_mode }}"
+  master_on: >-
+    {{ master_switch == {} or is_state(master_switch, 'on') }}
+
+  not_blocked: >-
+    {{ block_entities | select('is_state', 'on') | list | count == 0 }}
+
+  others_ok: "{{ someone_home and schedule_active and not_night_mode and not_blocked }}"
+
+  should_be_on: "{{ is_dark and others_ok }}"
+
+  should_be_off: "{{ not others_ok or is_bright }}"
 
 trigger:
   - id: lux_dropped
     platform: numeric_state
     entity_id: !input lux_sensor
     below: !input lux_threshold
+    for: !input lux_delay
   - id: lux_rose
-    platform: numeric_state
-    entity_id: !input lux_sensor
-    above: !input lux_threshold
+    platform: template
+    value_template: >-
+      {{ t_lux_sensor != {}
+         and states(t_lux_sensor) | float(0)
+             > [t_lux_threshold | float(10), t_lux_threshold_off | float(0)] | max }}
+    for: !input lux_delay
   - id: presence_changed
     platform: state
     entity_id: !input presence_entities
@@ -136,15 +239,27 @@ trigger:
   - id: night_mode_changed
     platform: state
     entity_id: !input night_mode_sensor
+  - id: block_changed
+    platform: state
+    entity_id: !input block_entities
+  - id: master_changed
+    platform: state
+    entity_id: !input master_switch
   - id: ha_start
     platform: homeassistant
     event: start
 
 action:
+  - alias: Master switch off - send nothing
+    condition: template
+    value_template: "{{ master_on }}"
   - alias: Turn on or off based on current conditions
     choose:
       - conditions:
           - condition: template
             value_template: "{{ should_be_on }}"
         sequence: !input on_action
-    default: !input off_action
+      - conditions:
+          - condition: template
+            value_template: "{{ should_be_off }}"
+        sequence: !input off_action
